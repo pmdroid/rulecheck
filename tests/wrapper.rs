@@ -9,7 +9,8 @@ use std::process::{Command, Output};
 use tempfile::TempDir;
 
 const ROOT: &str = env!("CARGO_MANIFEST_DIR");
-const EXAMPLE: &str = include_str!("../.rulecheck/rules/no-legacy-mode.rule.ts");
+// Wrapper tests edit the frozen literal rule, so their error positions stay stable.
+const EXAMPLE: &str = include_str!("fixtures/literal-no-legacy-mode.rule.ts");
 const FINDING: &str =
     "config/app.toml:2:1: [config/no-legacy-mode] Remove legacy_mode or set it to false.\n";
 

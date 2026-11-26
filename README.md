@@ -32,7 +32,7 @@ printf 'legacy_mode = false\n' > config/app.toml
 git add -A
 
 rulecheck test
-# 2 fixtures passed
+# 7 fixtures passed
 rulecheck check
 echo "$?"  # 0
 

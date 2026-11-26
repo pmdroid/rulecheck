@@ -7,6 +7,20 @@ use std::process::{Command, Output, Stdio};
 
 const ROOT: &str = env!("CARGO_MANIFEST_DIR");
 const EXAMPLE: &str = include_str!("../.rulecheck/rules/no-legacy-mode.rule.ts");
+// The original literal no-legacy-mode rule, frozen so builder diagnostics keep
+// stable positions while the live rule changes.
+const LITERAL_RULE: &str = include_str!("fixtures/literal-no-legacy-mode.rule.ts");
+const WEAKENED: &str = r#"import { defineRule } from "@rulecheck/sdk";
+
+export default defineRule({
+  id: "config/no-legacy-mode",
+  kind: "text",
+  paths: ["config/*.toml"],
+  pattern: { kind: "literal", value: "legacy_variant = true" },
+  remediation: "Remove legacy_mode or set it to false.",
+  fixtures: [{ path: "config/app.toml", content: "legacy_variant = true\n", expect: { line: 1, column: 1 } }],
+});
+"#;
 
 fn cli(args: &[&str], policy: &[u8], root: &Path) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_rulecheck"))
@@ -202,8 +216,8 @@ fn exact_ci_keeps_base_policy_when_the_candidate_weakens_or_removes_it() {
         "throw new Error('candidate tool')",
     )
     .unwrap();
-    let weakened_rule = EXAMPLE.replace("legacy_mode = true", "legacy_variant = true");
-    fs::write(&source, &weakened_rule).unwrap();
+    let weakened_rule = WEAKENED;
+    fs::write(&source, weakened_rule).unwrap();
     let weakened = commit(root);
 
     fs::write(&source, "invalid and staged rule").unwrap();
@@ -252,10 +266,13 @@ fn exact_ci_keeps_base_policy_when_the_candidate_weakens_or_removes_it() {
 fn exact_ci_treats_a_provenance_only_change_as_a_changed_rule() {
     let repo = tempfile::tempdir().unwrap();
     let root = repo.path();
-    let base = init_exact_repo(root);
+    init_exact_repo(root);
     let source = root.join(".rulecheck/rules/demo.rule.ts");
+    // Start from a rule without provenance; the live rule already carries one.
+    fs::write(&source, LITERAL_RULE).unwrap();
+    let base = commit(root);
     let tagged = |url: &str| {
-        EXAMPLE.replace(
+        LITERAL_RULE.replace(
             "  remediation:",
             &format!("  provenance: {{ finding: \"{url}\" }},\n  remediation:"),
         )
@@ -533,8 +550,8 @@ fn builder_reports_rule_shape_errors_at_the_rule_file() {
             "9:3: Forbidden-path rules have no pattern. Remove pattern.",
         ),
     ] {
-        assert!(EXAMPLE.contains(from), "{from}");
-        fs::write(&rule, EXAMPLE.replace(from, to)).unwrap();
+        assert!(LITERAL_RULE.contains(from), "{from}");
+        fs::write(&rule, LITERAL_RULE.replace(from, to)).unwrap();
         let output = build(root);
         expect(&output, 2);
         assert!(output.stdout.is_empty());
@@ -631,7 +648,7 @@ fn build_and_check_the_demo_end_to_end() {
 
     let output = cli(&["test", "--id-prefix", "config/"], &policy, root);
     expect(&output, 0);
-    assert_eq!(output.stdout, b"2 fixtures passed\n");
+    assert_eq!(output.stdout, b"7 fixtures passed\n");
     let output = cli(&["list", "--id-prefix", "config/"], &policy, root);
     expect(&output, 0);
     assert_eq!(output.stdout, b"config/no-legacy-mode\n");
