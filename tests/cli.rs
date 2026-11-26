@@ -249,6 +249,61 @@ fn exact_ci_keeps_base_policy_when_the_candidate_weakens_or_removes_it() {
 }
 
 #[test]
+fn exact_ci_treats_a_provenance_only_change_as_a_changed_rule() {
+    let repo = tempfile::tempdir().unwrap();
+    let root = repo.path();
+    let base = init_exact_repo(root);
+    let source = root.join(".rulecheck/rules/demo.rule.ts");
+    let tagged = |url: &str| {
+        EXAMPLE.replace(
+            "  remediation:",
+            &format!("  provenance: {{ finding: \"{url}\" }},\n  remediation:"),
+        )
+    };
+    let first_url = "https://github.com/pmdroid/rulecheck/pull/1#discussion_r1";
+    let second_url = "https://github.com/pmdroid/rulecheck/pull/2#discussion_r2";
+    fs::write(&source, tagged(first_url)).unwrap();
+    let added = commit(root);
+    fs::write(&source, tagged(second_url)).unwrap();
+    let edited = commit(root);
+
+    // Adding provenance and then editing only its URL each change the policy digest
+    // and list the rule under changes, while the checks themselves still pass.
+    for (from, to, before, after) in [
+        (&base, &added, None, first_url),
+        (&added, &edited, Some(first_url), second_url),
+    ] {
+        let report = check_ci(root, from, to, 0);
+        let phases = &report["phases"];
+        assert_eq!(phases["proposed-test"]["outcome"], "pass");
+        assert_ne!(
+            phases["base-check"]["policyDigest"],
+            phases["proposed-check"]["policyDigest"]
+        );
+        let diff = &report["effectivePolicyDiff"];
+        assert_eq!(diff["baseDigest"], phases["base-check"]["policyDigest"]);
+        assert_eq!(
+            diff["proposedDigest"],
+            phases["proposed-check"]["policyDigest"]
+        );
+        let changes = diff["changes"].as_array().unwrap();
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        assert_eq!(changes[0]["id"], "config/no-legacy-mode");
+        assert_eq!(
+            changes[0]["before"]["provenance"]["finding"].as_str(),
+            before
+        );
+        assert_eq!(changes[0]["after"]["provenance"]["finding"], after);
+        let strip = |rule: &serde_json::Value| {
+            let mut rule = rule.clone();
+            rule.as_object_mut().unwrap().remove("provenance");
+            rule
+        };
+        assert_eq!(strip(&changes[0]["before"]), strip(&changes[0]["after"]));
+    }
+}
+
+#[test]
 fn exact_ci_requires_a_current_owner_approval_for_a_policy_change_in_shadow() {
     let repo = tempfile::tempdir().unwrap();
     let root = repo.path();
@@ -416,7 +471,7 @@ fn builder_reports_rule_shape_errors_at_the_rule_file() {
             "remediation:",
             "remedy:",
             "10:3: Unknown property remedy in the rule. \
-             Use id, kind, paths, exclude, remediation, pattern and fixtures.",
+             Use id, kind, paths, exclude, remediation, pattern, provenance and fixtures.",
         ),
         (
             "content: \"legacy_mode = false\\n\", ",

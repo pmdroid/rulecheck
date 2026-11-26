@@ -10,6 +10,12 @@ interface RuleFields {
   /** Optional globs removed from `paths`. A file matching any entry is out of scope for checks and fixtures. */
   exclude?: readonly string[];
   remediation: string;
+  /**
+   * Optional link to the review finding that motivated the rule: an https:// URL of at most
+   * 2048 characters. Matching ignores it and findings don't show it. Rulecheck releases
+   * before provenance support reject policies that use it.
+   */
+  provenance?: { finding: string };
 }
 
 export type Rule = RuleFields & (

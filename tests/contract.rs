@@ -1,7 +1,9 @@
 //! Pins the published Rulecheck v1 scan and policy contract: path scope and
 //! exclusion, case handling, working-tree inventory, rule sources as
 //! candidates, first match per rule and file, non-regular inputs, and
-//! schema/SDK/evaluator field parity.
+//! schema/SDK/evaluator field parity, and provenance as matcher-ignored metadata.
+mod common;
+
 use serde_json::{Value, json};
 use std::fs;
 use std::io::Write;
@@ -10,6 +12,8 @@ use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
 const ROOT: &str = env!("CARGO_MANIFEST_DIR");
+const EXAMPLE: &str = include_str!("../.rulecheck/rules/no-legacy-mode.rule.ts");
+const FINDING: &str = "https://github.com/pmdroid/rulecheck/pull/1#discussion_r1";
 
 fn cli(args: &[&str], policy: &[u8], root: &Path) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_rulecheck"))
@@ -406,6 +410,7 @@ fn schema_sdk_and_evaluator_accept_the_same_rule_fields() {
             "kind",
             "paths",
             "pattern",
+            "provenance",
             "remediation"
         ]
     );
@@ -417,12 +422,22 @@ fn schema_sdk_and_evaluator_accept_the_same_rule_fields() {
     let mut fixture: Vec<_> = fixture.as_object().unwrap().keys().cloned().collect();
     fixture.sort();
     assert_eq!(fixture, ["content", "expect", "path"]);
+    let provenance = &rule["properties"]["provenance"];
+    assert_eq!(provenance["required"], json!(["finding"]));
+    assert_eq!(provenance["additionalProperties"], json!(false));
+    let keys: Vec<_> = provenance["properties"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .collect();
+    assert_eq!(keys, ["finding"]);
 
     let sdk = include_str!("../sdk/index.d.ts");
     for field in [
         "id: string;",
         "paths: readonly string[];",
         "exclude?: readonly string[];",
+        "provenance?: { finding: string };",
         "remediation: string;",
         "kind: \"text\";",
         "kind: \"forbidden-path\";",
@@ -433,13 +448,16 @@ fn schema_sdk_and_evaluator_accept_the_same_rule_fields() {
         assert!(sdk.contains(field), "SDK is missing {field}");
     }
 
-    // Fields outside the schema, such as provenance metadata, are rejected.
+    // The schema and the evaluator accept provenance; fields outside the schema are rejected.
     let root = Path::new(ROOT);
+    let mut with_provenance = marker_rule(&["src/**/*.ts"], None);
+    with_provenance["provenance"] = json!({ "finding": FINDING });
+    let accepted = policy(&[with_provenance]);
+    let value: Value = serde_json::from_slice(&accepted).unwrap();
+    assert_eq!(common::violations(&schema, &value), Vec::<String>::new());
+    assert_eq!(run(cli(&["validate"], &accepted, root), 0), "");
     for (key, value) in [
-        (
-            "provenance",
-            json!({ "finding": "https://example.invalid/1" }),
-        ),
+        ("provenances", json!({ "finding": FINDING })),
         ("include", json!(["src/**"])),
         ("severity", json!("error")),
     ] {
@@ -452,4 +470,207 @@ fn schema_sdk_and_evaluator_accept_the_same_rule_fields() {
     fixture_extra["fixtures"][0]["note"] = json!("x");
     let error = run(cli(&["validate"], &policy(&[fixture_extra]), root), 2);
     assert!(error.contains("unknown field `note`"), "{error}");
+}
+
+fn build(root: &Path) -> Output {
+    Command::new("node")
+        .arg(Path::new(ROOT).join("tools/build.mjs"))
+        .arg("--root")
+        .arg(root)
+        .output()
+        .expect("run build; install Node.js and run npm ci")
+}
+
+/// The shipped example rule with a provenance property on line 10, column 3.
+fn with_provenance(provenance: &str) -> String {
+    let source = EXAMPLE.replace(
+        "  remediation:",
+        &format!("  provenance: {provenance},\n  remediation:"),
+    );
+    assert_ne!(source, EXAMPLE);
+    source
+}
+
+fn findings(args: &[&str], policy: &[u8], root: &Path) -> (Value, Value) {
+    let output = cli(args, policy, root);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    (
+        result["findings"].clone(),
+        result["policy"]["sha256"].clone(),
+    )
+}
+
+#[test]
+fn provenance_is_metadata_that_matchers_fixtures_and_findings_ignore() {
+    let repo = repo();
+    let root = repo.path();
+    let source = root.join(".rulecheck/rules/demo.rule.ts");
+    write(
+        root,
+        "config/app.toml",
+        "name = \"app\"\nlegacy_mode = true\n",
+    );
+    write(root, ".rulecheck/rules/demo.rule.ts", EXAMPLE);
+    git(root, &["add", "-A"]);
+    let sha = commit(root);
+    let plain = run(build(root), 0);
+    fs::write(
+        &source,
+        with_provenance(&format!("{{ finding: \"{FINDING}\" }}")),
+    )
+    .unwrap();
+    let tagged = run(build(root), 0);
+
+    // The builder passes provenance through; without it the output is unchanged.
+    let field = format!("\"provenance\":{{\"finding\":\"{FINDING}\"}},");
+    assert!(tagged.contains(&field), "{tagged}");
+    assert_eq!(tagged.replace(&field, ""), plain);
+    let schema: Value = serde_json::from_str(include_str!("../schema/policy-v1.json")).unwrap();
+    let value: Value = serde_json::from_str(&tagged).unwrap();
+    assert_eq!(common::violations(&schema, &value), Vec::<String>::new());
+
+    let expected =
+        "config/app.toml:2:1: [config/no-legacy-mode] Remove legacy_mode or set it to false.\n";
+    for policy in [plain.as_bytes(), tagged.as_bytes()] {
+        assert_eq!(run(cli(&["validate"], policy, root), 0), "");
+        assert_eq!(run(cli(&["test"], policy, root), 0), "2 fixtures passed\n");
+        assert_eq!(run(cli(&["check"], policy, root), 1), expected);
+        assert_eq!(
+            run(cli(&["check", "--commit", &sha], policy, root), 1),
+            expected
+        );
+    }
+
+    // JSON findings are identical and never carry provenance; only the policy digest differs.
+    for args in [
+        &["check", "--format", "json"][..],
+        &["check", "--format", "json", "--commit", &sha][..],
+    ] {
+        let (plain_findings, plain_digest) = findings(args, plain.as_bytes(), root);
+        let (tagged_findings, tagged_digest) = findings(args, tagged.as_bytes(), root);
+        assert_eq!(plain_findings, tagged_findings);
+        assert_eq!(plain_findings.as_array().unwrap().len(), 1);
+        assert!(!tagged_findings.to_string().contains("provenance"));
+        assert_ne!(plain_digest, tagged_digest);
+    }
+}
+
+#[test]
+fn provenance_must_be_one_https_finding_url() {
+    let repo = repo();
+    let root = repo.path();
+    let source = root.join(".rulecheck/rules/demo.rule.ts");
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    let schema: Value = serde_json::from_str(include_str!("../schema/policy-v1.json")).unwrap();
+    let url_rule = "provenance.finding must be an https:// URL of at most 2048 characters";
+    let url_shape = "17: provenance finding must be an https:// URL of at most 2048 characters. \
+                     Change finding to an https:// URL of at most 2048 characters.";
+    let longest = format!("https://example.com/{}", "a".repeat(2048 - 20));
+    assert_eq!(longest.chars().count(), 2048);
+    let too_long = format!("{longest}a");
+
+    // A 2048-character URL is accepted everywhere.
+    let mut rule = marker_rule(&["src/**/*.ts"], None);
+    rule["provenance"] = json!({ "finding": longest });
+    let accepted = policy(&[rule]);
+    let value: Value = serde_json::from_slice(&accepted).unwrap();
+    assert_eq!(common::violations(&schema, &value), Vec::<String>::new());
+    assert_eq!(run(cli(&["validate"], &accepted, root), 0), "");
+    fs::write(
+        &source,
+        with_provenance(&format!("{{ finding: \"{longest}\" }}")),
+    )
+    .unwrap();
+    run(build(root), 0);
+
+    let object = "3: rule provenance must be an object { finding }. \
+                  Change provenance to an object { finding }.";
+    for (value, literal, evaluator, builder) in [
+        (
+            json!({ "finding": "http://example.com/1" }),
+            "{ finding: \"http://example.com/1\" }".to_owned(),
+            url_rule,
+            url_shape,
+        ),
+        (
+            json!({ "finding": too_long }),
+            format!("{{ finding: \"{too_long}\" }}"),
+            url_rule,
+            url_shape,
+        ),
+        (
+            json!({ "finding": "https://" }),
+            "{ finding: \"https://\" }".to_owned(),
+            url_rule,
+            url_shape,
+        ),
+        (
+            json!({ "finding": "https://example.com/a b" }),
+            "{ finding: \"https://example.com/a b\" }".to_owned(),
+            url_rule,
+            url_shape,
+        ),
+        (
+            json!({ "finding": "HTTPS://example.com/1" }),
+            "{ finding: \"HTTPS://example.com/1\" }".to_owned(),
+            url_rule,
+            url_shape,
+        ),
+        (
+            json!({ "finding": 1 }),
+            "{ finding: 1 }".to_owned(),
+            "invalid policy JSON",
+            url_shape,
+        ),
+        (
+            json!({}),
+            "{}".to_owned(),
+            "missing field `finding`",
+            "15: Missing property finding in the provenance. Add finding.",
+        ),
+        (
+            json!({ "finding": "https://example.com/1", "note": "x" }),
+            "{ finding: \"https://example.com/1\", note: \"x\" }".to_owned(),
+            "unknown field `note`",
+            "51: Unknown property note in the provenance. Use finding.",
+        ),
+        (
+            json!("https://example.com/1"),
+            "\"https://example.com/1\"".to_owned(),
+            "invalid policy JSON",
+            object,
+        ),
+        (
+            json!(null),
+            "null".to_owned(),
+            "invalid policy JSON",
+            object,
+        ),
+    ] {
+        let mut rule = marker_rule(&["src/**/*.ts"], None);
+        rule["provenance"] = value.clone();
+        let rejected = policy(&[rule]);
+        let parsed: Value = serde_json::from_slice(&rejected).unwrap();
+        assert!(
+            !common::violations(&schema, &parsed).is_empty(),
+            "schema accepted {value}"
+        );
+        let error = run(cli(&["validate"], &rejected, root), 2);
+        assert!(error.contains(evaluator), "{value}: {error}");
+        if evaluator == url_rule {
+            assert!(error.contains("[source/no-marker] "), "{error}");
+        }
+
+        // The builder reports the same mistake at the rule file, using the TS literal.
+        fs::write(&source, with_provenance(&literal)).unwrap();
+        let output = build(root);
+        assert!(output.stdout.is_empty(), "{value}");
+        let error = run(output, 2);
+        assert_eq!(
+            error,
+            format!("rulecheck build: .rulecheck/rules/demo.rule.ts:10:{builder}\n"),
+            "{value}"
+        );
+    }
 }
