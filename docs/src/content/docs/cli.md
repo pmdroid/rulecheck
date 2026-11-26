@@ -7,7 +7,7 @@ The installed `rulecheck` command builds policy from `.rulecheck/rules/**/*.rule
 
 | Command | Purpose |
 | --- | --- |
-| `rulecheck check [--root DIR] [--commit SHA]` | Scan working-tree files tracked by Git, or inspect exact committed blobs. |
+| `rulecheck check [--root DIR] [--commit SHA] [--format human\|json]` | Scan working-tree files tracked by Git, or inspect exact committed blobs. |
 | `rulecheck test [--root DIR] [--commit SHA]` | Run rule fixtures. |
 | `rulecheck list [--root DIR] [--commit SHA]` | List rule IDs in sorted order. |
 | `rulecheck validate [--root DIR] [--commit SHA]` | Check policy syntax, rule IDs, globs, and patterns. |
@@ -30,6 +30,72 @@ rulecheck check --commit "$(git rev-parse HEAD)"
 ```
 
 Findings report the first match per rule and file. Columns count Unicode scalar values, not bytes; forbidden paths use `1:1`. Narrow broad globs if the scanner reports an input limit.
+
+## Machine-readable results
+
+`rulecheck check --format json` writes a single JSON document to stdout. It follows [`schema/result-v1.json`](https://github.com/pmdroid/rulecheck/blob/main/schema/result-v1.json). The default `--format human` prints the `path:line:column: [rule-id] remediation` lines shown above, and the two formats report the same findings in the same order. Diagnostics still go to stderr in human form, so the exit codes are unchanged.
+
+```json
+{
+  "command": "check",
+  "diagnostics": [],
+  "exitCode": 1,
+  "findings": [
+    {
+      "byteEnd": 28,
+      "byteStart": 10,
+      "column": 1,
+      "line": 2,
+      "path": "config/app.toml",
+      "remediation": "Remove legacy_mode or set it to false.",
+      "ruleId": "config/no-legacy-mode"
+    }
+  ],
+  "outcome": "violation",
+  "policy": {
+    "idPrefix": null,
+    "ruleIds": ["config/no-legacy-mode"],
+    "sha256": "sha256:2c9b4ec5…",
+    "version": 1
+  },
+  "resultVersion": 1,
+  "source": { "commit": null, "mode": "working-tree" },
+  "tools": {
+    "builder": "rulecheck-builder 0.1.0 (TypeScript 5.9.3)",
+    "evaluator": "rulecheck 0.1.0"
+  }
+}
+```
+
+The contract:
+
+- `resultVersion` is 1. It versions this document separately from the policy `version`. Reject a version you don't know.
+- `exitCode` always equals the process exit status, and `outcome` names it: `pass` (0), `violation` (1) or `error` (2).
+- Findings are sorted by path, then line and column, then rule ID. `line` and `column` are the one-based values from human output, with columns counted in Unicode scalar values. `byteStart` and `byteEnd` are the zero-based, half-open UTF-8 byte range of the first match in the file, so `file[byteStart..byteEnd]` is the matched text. Forbidden-path findings have no text and report `null` for both.
+- `diagnostics` lists each reason the check could not judge, as `{ ruleId, message }`. `ruleId` is set for an empty text scope and `null` otherwise. Any diagnostic makes the outcome `error`.
+- After an empty text scope, the findings for the other rules are complete and still listed. When a scan stops early, for example on an unreadable file or an input limit, `findings` is empty. Never treat an `error` result as clean.
+- `policy.sha256` is the SHA-256 of the exact policy bytes the evaluator read. It is `null` when the policy could not be read. It differs from the shadow evidence's effective-policy digest, which hashes a canonical form. `policy.version` is `null` when the policy is invalid. `policy.ruleIds` lists the rules selected after `--id-prefix`.
+- `source.mode` is `commit` with the exact `--commit` SHA, or `working-tree` with `commit: null`. A working-tree scan includes unstaged edits, so no commit describes it exactly.
+- `tools.evaluator` is the evaluator version. The installed `rulecheck` command sets `tools.builder`. The low-level evaluator reports `null` because it reads policy from stdin.
+- If the builder fails, the installed command still writes an error result. It carries the builder's messages as diagnostics and `null` policy fields. Invalid arguments produce no document, only a usage message and exit 2. Treat a missing or unparsable document as `error`.
+
+## Limits
+
+Every limit fails closed with exit 2 and a message naming the limit:
+
+| Input | Limit |
+| --- | --- |
+| Rule source file | 128 KiB |
+| Policy JSON | 1 MiB and 128 rules |
+| Scoped text file | 1 MiB |
+| Scoped text in one scan | 64 MiB |
+| Git index or tree listing | 8 MiB |
+| Findings | 10,000 |
+| Builder run, and evaluator run under the installed command | 120 s each |
+
+## Reproducibility
+
+`node tools/reproduce.mjs REPO COMMIT_SHA EVALUATOR` builds policy twice from an exact commit. It runs the fixtures and the check with each build, then compares the policy bytes, test output, findings in order, and the full JSON results. The report records tool versions, policy digests and wall time for each step. Wall time is recorded but not judged, so a slow run is not a failure. The command exits 0 when both runs match, 1 when they differ, and 2 when a step cannot run. CI runs it from a fresh checkout with the pinned Node.js and Rust versions that shadow CI uses, and uploads the report as `rulecheck-reproduction`.
 
 ## What gets scanned
 

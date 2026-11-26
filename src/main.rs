@@ -2,10 +2,16 @@ mod policy;
 mod repository;
 
 use policy::{CompiledRule, Location, Result};
+use repository::Report;
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+
+/// Version of the `check --format json` document, independent of the policy version.
+const RESULT_VERSION: u32 = 1;
 
 const HELP: &str = "\
 rulecheck: deterministic repository checks
@@ -15,14 +21,20 @@ rulecheck: deterministic repository checks
   rulecheck validate                        Validate a policy from stdin
   rulecheck list [--id-prefix PREFIX]        List policy rule IDs
   rulecheck test [--id-prefix PREFIX]        Check exact fixture expectations
-  rulecheck check [--root DIR] [--commit SHA] [--id-prefix PREFIX]
+  rulecheck check [--root DIR] [--commit SHA] [--id-prefix PREFIX] [--format human|json]
                                             Scan a checkout or exact Git commit
 
 Exit codes: 0 clean, 1 violation or fixture mismatch, 2 cannot judge.";
 
+#[derive(Clone, Copy, PartialEq)]
+enum Format {
+    Human,
+    Json,
+}
+
 fn main() -> ExitCode {
     match run(std::env::args_os().skip(1)) {
-        Ok(clean) => ExitCode::from(u8::from(!clean)),
+        Ok(code) => ExitCode::from(code),
         Err(error) => {
             eprintln!("rulecheck: {error}");
             ExitCode::from(2)
@@ -30,12 +42,13 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(mut args: impl Iterator<Item = OsString>) -> Result<bool> {
+fn run(mut args: impl Iterator<Item = OsString>) -> Result<u8> {
     let command = args.next().unwrap_or_else(|| "--help".into());
     let command = command.to_str().ok_or("expected a UTF-8 command")?;
     let mut root = None;
     let mut commit = None;
     let mut prefix = None;
+    let mut format = None;
     while let Some(flag) = args.next() {
         match flag.to_str() {
             Some("--root") if command == "check" && root.is_none() => {
@@ -64,6 +77,13 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<bool> {
                     .ok_or("--id-prefix requires a nonempty UTF-8 prefix")?;
                 prefix = Some(value);
             }
+            Some("--format") if command == "check" && format.is_none() => {
+                format = match args.next().as_ref().and_then(|value| value.to_str()) {
+                    Some("human") => Some(Format::Human),
+                    Some("json") => Some(Format::Json),
+                    _ => return Err("--format requires human or json".into()),
+                };
+            }
             _ => {
                 return Err(format!(
                     "unexpected argument {flag:?}; run rulecheck --help"
@@ -76,38 +96,157 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<bool> {
         "-h" | "--help" => println!("{HELP}"),
         "-V" | "--version" => println!("rulecheck {}", env!("CARGO_PKG_VERSION")),
         "schema" => print!("{}", include_str!("../schema/policy-v1.json")),
-        "validate" | "list" | "test" | "check" => {
-            let rules = policy::load(io::stdin().lock())?;
-            let rules: Vec<_> = rules
-                .iter()
-                .filter(|rule| {
-                    prefix
-                        .as_ref()
-                        .is_none_or(|prefix| rule.id.starts_with(prefix))
-                })
-                .collect();
-            if rules.is_empty() {
-                return Err(format!(
-                    "no rule IDs match prefix {:?}",
-                    prefix.unwrap_or_default()
-                ));
-            }
+        "check" => {
+            let root = root.as_deref().unwrap_or(Path::new("."));
+            return check(
+                root,
+                commit.as_deref(),
+                prefix.as_deref(),
+                format.unwrap_or(Format::Human),
+            );
+        }
+        "validate" | "list" | "test" => {
+            let rules = policy::load(&policy::read(io::stdin().lock())?)?;
+            let rules = select(&rules, prefix.as_deref())?;
             match command {
                 "list" => rules.iter().for_each(|rule| println!("{}", rule.id)),
-                "test" => return Ok(test(&rules)),
-                "check" => {
-                    let root = root.as_deref().unwrap_or(Path::new("."));
-                    return match commit {
-                        Some(sha) => repository::check_commit(root, &sha, &rules),
-                        None => repository::check(root, &rules),
-                    };
-                }
+                "test" => return Ok(u8::from(!test(&rules))),
                 _ => {}
             }
         }
         _ => return Err(format!("unknown command {command:?}; run rulecheck --help")),
     }
-    Ok(true)
+    Ok(0)
+}
+
+fn select<'a>(rules: &'a [CompiledRule], prefix: Option<&str>) -> Result<Vec<&'a CompiledRule>> {
+    let selected: Vec<_> = rules
+        .iter()
+        .filter(|rule| prefix.is_none_or(|prefix| rule.id.starts_with(prefix)))
+        .collect();
+    if selected.is_empty() {
+        return Err(format!(
+            "no rule IDs match prefix {:?}",
+            prefix.unwrap_or_default()
+        ));
+    }
+    Ok(selected)
+}
+
+const EMPTY_SCOPE: &str = "empty text scope: track a matching file or update the rule's path globs";
+const EMPTY_SCOPES: &str = "one or more text rules matched no repository files";
+
+/// Reads policy from stdin and scans the checkout or commit. Human output keeps
+/// the line format `path:line:column: [id] remediation`. JSON output always
+/// writes one result document to stdout, including when the scan cannot judge,
+/// and repeats diagnostics on stderr in the human form.
+fn check(root: &Path, commit: Option<&str>, prefix: Option<&str>, format: Format) -> Result<u8> {
+    let bytes = policy::read(io::stdin().lock());
+    let digest = bytes
+        .as_ref()
+        .ok()
+        .map(|bytes| format!("sha256:{:x}", Sha256::digest(bytes)));
+    let rules = bytes.and_then(|bytes| policy::load(&bytes));
+    let selected = rules
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(|rules| select(rules, prefix));
+    let report = selected
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(|rules| match commit {
+            Some(sha) => repository::check_commit(root, sha, rules),
+            None => repository::check(root, rules),
+        });
+
+    if format == Format::Human {
+        let report = report?;
+        for finding in &report.findings {
+            let Location { line, column } = finding.location;
+            println!(
+                "{}:{line}:{column}: [{}] {}",
+                finding.path, finding.id, finding.remediation
+            );
+        }
+        for id in &report.empty_scopes {
+            eprintln!("[{id}] {EMPTY_SCOPE}");
+        }
+        if !report.empty_scopes.is_empty() {
+            return Err(EMPTY_SCOPES.into());
+        }
+        return Ok(u8::from(!report.findings.is_empty()));
+    }
+
+    let mut diagnostics = Vec::new();
+    let mut findings = Vec::new();
+    match &report {
+        Ok(Report {
+            findings: found,
+            empty_scopes,
+        }) => {
+            findings = found.iter().map(finding_json).collect();
+            for id in empty_scopes {
+                eprintln!("[{id}] {EMPTY_SCOPE}");
+                diagnostics.push(json!({ "ruleId": id, "message": EMPTY_SCOPE }));
+            }
+            if !empty_scopes.is_empty() {
+                eprintln!("rulecheck: {EMPTY_SCOPES}");
+                diagnostics.push(json!({ "ruleId": null, "message": EMPTY_SCOPES }));
+            }
+        }
+        Err(error) => {
+            eprintln!("rulecheck: {error}");
+            diagnostics.push(json!({ "ruleId": null, "message": error }));
+        }
+    }
+    let code = if !diagnostics.is_empty() {
+        2
+    } else {
+        u8::from(!findings.is_empty())
+    };
+    let ids: Vec<_> = selected
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|rule| rule.id.as_str())
+        .collect();
+    let outcome = ["pass", "violation", "error"][usize::from(code)];
+    let result = json!({
+        "resultVersion": RESULT_VERSION,
+        "command": "check",
+        "outcome": outcome,
+        "exitCode": code,
+        "tools": { "evaluator": format!("rulecheck {}", env!("CARGO_PKG_VERSION")), "builder": null },
+        "policy": {
+            "version": rules.as_ref().ok().map(|_| 1),
+            "sha256": digest,
+            "idPrefix": prefix,
+            "ruleIds": ids,
+        },
+        "source": {
+            "mode": if commit.is_some() { "commit" } else { "working-tree" },
+            "commit": commit,
+        },
+        "findings": findings,
+        "diagnostics": diagnostics,
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&result).expect("serialize result")
+    );
+    Ok(code)
+}
+
+fn finding_json(finding: &repository::Finding) -> Value {
+    json!({
+        "ruleId": finding.id,
+        "path": finding.path,
+        "line": finding.location.line,
+        "column": finding.location.column,
+        "byteStart": finding.span.map(|span| span.start),
+        "byteEnd": finding.span.map(|span| span.end),
+        "remediation": finding.remediation,
+    })
 }
 
 fn test(rules: &[&CompiledRule]) -> bool {

@@ -65,7 +65,11 @@ Use `--id-prefix PREFIX` with `list`, `test`, or `check` to select rules by ID p
 
 Use slash-separated relative globs in `paths`, plus an optional `exclude` list of up to 16 globs. A file is in scope when it matches `paths` and nothing in `exclude`. Fixtures follow the same rule. Globs are case-sensitive. A single `*` stays within one path segment and `**` can span directories. Text rules search case-sensitive literals or Rust regex patterns in UTF-8 text. Each rule reports the first match per file, with one-based lines and Unicode scalar columns. A forbidden-path finding uses location 1:1. A fixture uses `expect: null` for no finding or an exact `{ line, column }` for a finding. Text fixtures supply `content`.
 
-The builder limits each source to 128 KiB. Policy input is capped at 1 MiB and 128 rules. The scanner limits each scoped text file to 1 MiB, total scoped text to 64 MiB, Git index output to 8 MiB, and output to 10,000 findings. Run against a checkout that stays stable during the command.
+Pass `--format json` to `check` for one versioned result document on stdout ([`schema/result-v1.json`](schema/result-v1.json)). It lists findings with their line, column, and zero-based half-open UTF-8 `byteStart`/`byteEnd`, plus diagnostics, the SHA-256 of the exact policy bytes, tool versions, and the commit in `--commit` mode. Its `exitCode` matches the process exit. The default human output is unchanged. See the [CLI reference](docs/src/content/docs/cli.md#machine-readable-results) for the full contract.
+
+The builder limits each source to 128 KiB. Policy input is capped at 1 MiB and 128 rules. The scanner limits each scoped text file to 1 MiB, total scoped text to 64 MiB, Git index output to 8 MiB, and output to 10,000 findings. The installed command stops the builder and the evaluator after 120 s each. Run against a checkout that stays stable during the command.
+
+To verify reproducible output, run `node tools/reproduce.mjs /path/to/repo "$SHA" target/release/rulecheck`. It builds policy from that commit twice, checks the commit with each build, and exits 0 only when the policy bytes, fixture results, findings and their order all match. It records wall time without judging it. CI runs it from a fresh checkout as the `reproduce` job.
 
 ### Low-level pipeline
 

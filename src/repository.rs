@@ -1,4 +1,4 @@
-use crate::policy::{CompiledRule, Location, MAX_FILE, Result, bounded_read, valid_path};
+use crate::policy::{CompiledRule, Location, MAX_FILE, Result, Span, bounded_read, valid_path};
 use rustix::fs::{Mode, OFlags, open, openat};
 use rustix::io::Errno;
 use std::fs::File;
@@ -11,15 +11,25 @@ const MAX_ENTRIES: usize = 8 * 1024 * 1024;
 const MAX_TEXT: usize = 64 * 1024 * 1024;
 const MAX_FINDINGS: usize = 10_000;
 
+/// One rule's first match in one file. The derived order (path, location, rule
+/// ID) is the published output order.
 #[derive(Eq, Ord, PartialEq, PartialOrd)]
-struct Finding<'a> {
-    path: &'a str,
-    location: Location,
-    id: &'a str,
-    remediation: &'a str,
+pub struct Finding<'a> {
+    pub path: String,
+    pub location: Location,
+    pub id: &'a str,
+    pub remediation: &'a str,
+    pub span: Option<Span>,
 }
 
-pub fn check(root: &Path, rules: &[&CompiledRule]) -> Result<bool> {
+/// A completed scan. Text rules in `empty_scopes` matched no candidate file, so
+/// the scan cannot judge them and the command must exit 2.
+pub struct Report<'a> {
+    pub findings: Vec<Finding<'a>>,
+    pub empty_scopes: Vec<&'a str>,
+}
+
+pub fn check<'a>(root: &Path, rules: &[&'a CompiledRule]) -> Result<Report<'a>> {
     let directory = open(root, directory_flags(), Mode::empty())
         .map_err(|err| format!("cannot open checkout {}: {err}", root.display()))?;
     if !git_output(root, &["rev-parse", "--show-prefix"], 4096)?
@@ -44,7 +54,7 @@ pub fn check(root: &Path, rules: &[&CompiledRule]) -> Result<bool> {
     })
 }
 
-pub fn check_commit(root: &Path, sha: &str, rules: &[&CompiledRule]) -> Result<bool> {
+pub fn check_commit<'a>(root: &Path, sha: &str, rules: &[&'a CompiledRule]) -> Result<Report<'a>> {
     if git_output(root, &["cat-file", "-t", sha], 32)? != b"commit\n" {
         return Err("--commit requires a Git commit object".into());
     }
@@ -79,11 +89,11 @@ pub fn check_commit(root: &Path, sha: &str, rules: &[&CompiledRule]) -> Result<b
     })
 }
 
-fn scan<'a>(
-    paths: impl IntoIterator<Item = &'a str>,
+fn scan<'a, 'p>(
+    paths: impl IntoIterator<Item = &'p str>,
     rules: &[&'a CompiledRule],
     read: impl Fn(&str, bool) -> Result<Option<Vec<u8>>>,
-) -> Result<bool> {
+) -> Result<Report<'a>> {
     let mut hits = vec![0; rules.len()];
     let mut findings = Vec::new();
     let mut text_bytes = 0;
@@ -125,42 +135,32 @@ fn scan<'a>(
 
         for (index, rule) in &mut applicable {
             hits[index] += 1;
-            if let Some(location) = rule.matcher.location(content.as_deref()) {
+            if let Some((location, span)) = rule.matcher.find(content.as_deref()) {
                 if findings.len() >= MAX_FINDINGS {
                     return Err(context("more than 10,000 findings; narrow the path scope"));
                 }
                 findings.push(Finding {
-                    path,
+                    path: path.to_owned(),
                     location,
                     id: &rule.id,
                     remediation: &rule.remediation,
+                    span,
                 });
             }
         }
     }
 
-    let mut empty_scope = false;
-    for (rule, count) in rules.iter().zip(hits) {
-        if rule.matcher.needs_text() && count == 0 {
-            eprintln!(
-                "[{}] empty text scope: track a matching file or update the rule's path globs",
-                rule.id
-            );
-            empty_scope = true;
-        }
-    }
+    let empty_scopes = rules
+        .iter()
+        .zip(hits)
+        .filter(|(rule, count)| rule.matcher.needs_text() && *count == 0)
+        .map(|(rule, _)| rule.id.as_str())
+        .collect();
     findings.sort_unstable();
-    for finding in &findings {
-        let Location { line, column } = finding.location;
-        println!(
-            "{}:{line}:{column}: [{}] {}",
-            finding.path, finding.id, finding.remediation
-        );
-    }
-    if empty_scope {
-        return Err("one or more text rules matched no repository files".into());
-    }
-    Ok(findings.is_empty())
+    Ok(Report {
+        findings,
+        empty_scopes,
+    })
 }
 
 fn git_output(root: &Path, args: &[&str], limit: usize) -> Result<Vec<u8>> {
