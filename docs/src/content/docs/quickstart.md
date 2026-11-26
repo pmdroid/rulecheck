@@ -13,7 +13,7 @@ cargo build --locked
 bash docs/examples/run.sh
 ```
 
-The script runs the actual builder and evaluator in a temporary Git repository. It checks expected exit codes and output for all cookbook recipes and an invalid policy. It removes the temporary repository on exit.
+The script uses the debug evaluator from `cargo build --locked`. To run it against a release build instead, set `RULECHECK_BIN=target/release/rulecheck`. It runs the actual builder and evaluator in a temporary Git repository. It checks expected exit codes and output for all cookbook recipes and an invalid policy. It removes the temporary repository on exit.
 
 ## Install the `rulecheck` command
 
@@ -25,10 +25,9 @@ cd ~/.local/share/rulecheck
 npm ci --ignore-scripts
 cargo build --locked --release
 mkdir -p ~/.local/bin
-ln -s "$PWD/bin/rulecheck.mjs" ~/.local/bin/rulecheck
+ln -sf "$PWD/bin/rulecheck.mjs" ~/.local/bin/rulecheck
+export PATH="$HOME/.local/bin:$PATH"  # add this line to your shell profile too
 ```
-
-Make sure `~/.local/bin` is on your `PATH`.
 
 ## Check your repository
 
@@ -39,6 +38,8 @@ git add -A
 rulecheck test    # run rule fixtures
 rulecheck check   # 0 clean, 1 findings, 2 cannot judge
 ```
+
+A text rule whose `paths` match no tracked file makes `check` exit 2 with `empty text scope`, so stage the files the rule covers before the first check. To type-check rules against the SDK, see [Authoring rules](../authoring/#type-check-rules-in-your-repository).
 
 From another directory, use `rulecheck check --root /path/to/checkout`. The policy goes straight from the builder to the evaluator through a pipe. No `policy.json` is written, and nothing from the checked repository is imported or run, including its package scripts and `node_modules`.
 

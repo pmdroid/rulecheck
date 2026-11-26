@@ -12,7 +12,8 @@ cd ~/.local/share/rulecheck
 npm ci --ignore-scripts
 cargo build --locked --release
 mkdir -p ~/.local/bin
-ln -s "$PWD/bin/rulecheck.mjs" ~/.local/bin/rulecheck
+ln -sf "$PWD/bin/rulecheck.mjs" ~/.local/bin/rulecheck
+export PATH="$HOME/.local/bin:$PATH"  # add this line to your shell profile too
 ```
 
 `rulecheck` always uses the builder, TypeScript package, and `target/release/rulecheck` evaluator from that installation. It never takes them from the repository being checked or from `PATH`. Repeat the `npm ci` and `cargo build` steps after you update the clone.
@@ -53,7 +54,7 @@ Run from the checkout root, or pass `--root DIR` from anywhere else. A subdirect
 
 ## Author and run rules
 
-Copy the [example rule](.rulecheck/rules/no-legacy-mode.rule.ts) to create a rule. The builder discovers `.rulecheck/rules/**/*.rule.ts` in path order. Each file starts with `import { defineRule } from "@rulecheck/sdk"` and ends with one `export default defineRule({...})`. Values can be literals, arrays, objects with explicit keys, and references to earlier literal `const` declarations. Keep runtime code outside rule files. Run `npm run typecheck` in the Rulecheck checkout to check rules against the SDK types.
+Copy the [example rule](.rulecheck/rules/no-legacy-mode.rule.ts) to create a rule. The builder discovers `.rulecheck/rules/**/*.rule.ts` in path order. Each file starts with `import { defineRule } from "@rulecheck/sdk"` and ends with one `export default defineRule({...})`. Values can be literals, arrays, objects with explicit keys, and references to earlier literal `const` declarations. Keep runtime code outside rule files. `npm run typecheck` in the Rulecheck checkout checks only Rulecheck's own rules. To type-check another repository's rules, use the throwaway config in the [authoring guide](docs/src/content/docs/authoring.md#type-check-rules-in-your-repository). `rulecheck test` checks fixture `content` at the fixture `path` without reading the working tree, so an out-of-scope fixture `path` with `expect: null` proves the scope.
 
 - `rulecheck check [--root DIR]` builds policy from the checkout's rules and checks the working-tree contents of regular files in the Git index. Unstaged edits are checked. Untracked files are not, even if they aren't ignored, so stage new paths with `git add` first. Tracked files that are deleted are skipped. Git symlinks and submodules are skipped too. A scoped path that is now a directory, FIFO, or symlinked directory yields exit 2. Rule sources under `.rulecheck/` are scanned like other files.
 - `rulecheck test`, `rulecheck list`, and `rulecheck validate` run fixture expectations, print sorted rule IDs, and validate the built policy, including rule IDs, globs, and regex syntax. Each accepts `--root DIR` to pick the rules checkout.
