@@ -1,0 +1,11 @@
+{
+  "name": "rulecheck-authoring",
+  "private": true,
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "typescript": "5.9.3"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "paths": {
+      "@rulecheck/sdk": ["./sdk/index.d.ts"]
+    }
+  },
+  "include": [".rulecheck/rules/**/*.rule.ts"]
+}

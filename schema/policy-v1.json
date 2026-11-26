@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Rulecheck policy v1",
+  "description": "Rulecheck also validates byte limits, unique IDs, relative paths, and glob and regex syntax.",
+  "type": "object",
+  "required": ["version", "rules"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": 1 },
+    "rules": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": { "$ref": "#/$defs/rule" }
+    }
+  },
+  "$defs": {
+    "rule": {
+      "type": "object",
+      "required": ["id", "kind", "paths", "remediation", "fixtures"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-z0-9-]+(/[a-z0-9-]+)*$" },
+        "kind": { "enum": ["text", "forbidden-path"] },
+        "paths": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+        },
+        "remediation": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "pattern": {
+          "type": "object",
+          "required": ["kind", "value"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "enum": ["literal", "regex"] },
+            "value": { "type": "string", "minLength": 1, "maxLength": 4096 }
+          }
+        },
+        "fixtures": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/fixture" }
+        }
+      },
+      "if": { "properties": { "kind": { "const": "text" } } },
+      "then": {
+        "required": ["pattern"],
+        "properties": { "fixtures": { "items": { "required": ["content"] } } }
+      },
+      "else": {
+        "not": { "required": ["pattern"] },
+        "properties": { "fixtures": { "items": { "not": { "required": ["content"] } } } }
+      }
+    },
+    "fixture": {
+      "type": "object",
+      "required": ["path", "expect"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "content": { "type": "string" },
+        "expect": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": ["line", "column"],
+              "additionalProperties": false,
+              "properties": {
+                "line": { "type": "integer", "minimum": 1 },
+                "column": { "type": "integer", "minimum": 1 }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
