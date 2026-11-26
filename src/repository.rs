@@ -31,7 +31,10 @@ pub struct Report<'a> {
 
 pub const ROOT_HINT: &str = "run from the checkout root or pass --root";
 
-pub fn check<'a>(root: &Path, rules: &[&'a CompiledRule]) -> Result<Report<'a>> {
+/// Scans the working tree. The inventory is the regular files in the Git index;
+/// with `untracked`, non-ignored untracked files are added. Both are read with
+/// the same no-follow rules, and deleted index entries are skipped.
+pub fn check<'a>(root: &Path, rules: &[&'a CompiledRule], untracked: bool) -> Result<Report<'a>> {
     let directory = open(root, directory_flags(), Mode::empty())
         .map_err(|err| format!("cannot open checkout {}: {err}", root.display()))?;
     if !git_output(root, &["rev-parse", "--show-prefix"], 4096)?
@@ -44,7 +47,18 @@ pub fn check<'a>(root: &Path, rules: &[&'a CompiledRule]) -> Result<Report<'a>> 
         ));
     }
     let index = git_output(root, &["ls-files", "--stage", "-z"], MAX_ENTRIES)?;
-    let paths = tracked_regular_paths(&index)?;
+    let mut paths = tracked_regular_paths(&index)?;
+    let others;
+    if untracked {
+        others = git_output(
+            root,
+            &["ls-files", "--others", "--exclude-standard", "-z"],
+            MAX_ENTRIES,
+        )?;
+        paths.extend(untracked_paths(&others)?);
+        paths.sort_unstable();
+        paths.dedup();
+    }
     scan(paths, rules, |path, needs_text| {
         let Some(file) = open_candidate(&directory, path)? else {
             return Ok(None);
@@ -211,6 +225,24 @@ fn tracked_regular_paths(index: &[u8]) -> Result<Vec<&str>> {
         }
     }
     paths.sort_unstable();
+    Ok(paths)
+}
+
+/// Parses `git ls-files --others -z`. Git lists untracked regular files and
+/// symlinks (FIFOs, sockets and devices are invisible to it) and shows a nested
+/// repository as one `dir/` entry, which is skipped like a gitlink in the index.
+fn untracked_paths(others: &[u8]) -> Result<Vec<&str>> {
+    let others = std::str::from_utf8(others).map_err(|_| "Git paths must be UTF-8")?;
+    let mut paths = Vec::new();
+    for path in others.split_terminator('\0') {
+        if path.ends_with('/') {
+            continue;
+        }
+        if !valid_path(path) {
+            return Err(format!("unsupported Git path {path:?}"));
+        }
+        paths.push(path);
+    }
     Ok(paths)
 }
 
