@@ -120,6 +120,10 @@ Without `--commit`, the candidate files are the regular files in the Git index, 
 
 With `--commit SHA`, the candidate files are the commit's tree, and the index and working tree are ignored. A scoped symlink or submodule exits 2.
 
+## Rule sources
+
+Every entry under `.rulecheck/rules` must be a regular file or a real directory, in both modes. Without `--commit`, a symlink, FIFO, socket, device, or symlinked directory there exits 2 with an error that names the path, even if its name doesn't end in `.rule.ts`. With `--commit SHA`, any entry that is not a regular blob or a tree exits 2 the same way. This keeps a rule from silently dropping out of the policy. Without `--commit`, nested Git repositories and submodules under `.rulecheck/rules` are skipped; in a commit a submodule there exits 2. Regular files that don't end in `.rule.ts` are ignored.
+
 Rule sources under `.rulecheck/` are scanned like any other file. A broad scope such as `**/*.ts` can match a rule's own pattern or fixture text, so add `exclude: [".rulecheck/**"]` to that rule.
 
 ## Low-level pipeline
