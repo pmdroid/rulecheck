@@ -1,4 +1,6 @@
 //! The installed `rulecheck` wrapper, run from a separate repository through PATH.
+mod common;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::symlink;
@@ -266,5 +268,107 @@ fn installed_wrapper_never_launches_itself_as_the_evaluator() {
     let output = install.run(repo.path(), &["check"]);
     let error = expect(&output, 2, "");
     assert!(error.contains("must be the Rust evaluator"), "{error}");
+    assert_eq!(fs::read_dir(markers.path()).unwrap().count(), 0);
+}
+
+fn json_result(output: &Output, code: i32) -> serde_json::Value {
+    assert_eq!(output.status.code(), Some(code), "{output:?}");
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let schema = serde_json::from_str(include_str!("../schema/result-v1.json")).unwrap();
+    let errors = common::violations(&schema, &result);
+    assert!(errors.is_empty(), "{errors:?}\n{result:#}");
+    assert_eq!(result["exitCode"], code);
+    result
+}
+
+#[test]
+fn installed_check_writes_a_json_result_even_when_the_build_fails() {
+    let install = Install::new();
+    let markers = tempfile::tempdir().unwrap();
+    let repo = hostile_repo(markers.path());
+    let root = repo.path();
+    let builder = "rulecheck-builder 0.1.0 (TypeScript 5.9.3)";
+    let evaluator = format!("rulecheck {}", env!("CARGO_PKG_VERSION"));
+
+    fs::write(
+        root.join("config/app.toml"),
+        "name = \"app\"\nlegacy_mode = true\n",
+    )
+    .unwrap();
+    let result = json_result(&install.run(root, &["check", "--format", "json"]), 1);
+    assert_eq!(
+        result["tools"],
+        serde_json::json!({ "builder": builder, "evaluator": evaluator })
+    );
+    assert_eq!(result["findings"][0]["byteStart"], 13);
+    assert_eq!(result["findings"][0]["byteEnd"], 31);
+    // Human output is unchanged by the machine format.
+    expect(
+        &install.run(root, &["check", "--format", "human"]),
+        1,
+        FINDING,
+    );
+
+    git(root, &["add", "-A"]);
+    git(
+        root,
+        &[
+            "-c",
+            "user.name=Rulecheck Test",
+            "-c",
+            "user.email=rulecheck@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "candidate",
+        ],
+    );
+    let output = Command::new("git")
+        .current_dir(root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    let sha = String::from_utf8(output.stdout).unwrap().trim().to_owned();
+    let args = ["check", "--commit", &sha, "--format", "json"];
+    let exact = json_result(&install.run(root, &args), 1);
+    assert_eq!(
+        exact["source"],
+        serde_json::json!({ "mode": "commit", "commit": sha })
+    );
+    assert_eq!(exact["findings"], result["findings"]);
+
+    fs::write(
+        root.join(".rulecheck/rules/demo.rule.ts"),
+        EXAMPLE.replace("value: legacySetting", "value: makePattern()"),
+    )
+    .unwrap();
+    let output = install.run(root, &["check", "--format", "json"]);
+    let failed = json_result(&output, 2);
+    assert_eq!(failed["outcome"], "error");
+    assert_eq!(failed["findings"], serde_json::json!([]));
+    assert_eq!(failed["policy"]["sha256"], serde_json::Value::Null);
+    assert_eq!(failed["tools"]["evaluator"], evaluator.as_str());
+    let messages: Vec<_> = failed["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["message"].as_str().unwrap())
+        .collect();
+    assert_eq!(messages.len(), 2, "{messages:?}");
+    assert!(
+        messages[0].contains("demo.rule.ts:9:38: Unsupported value"),
+        "{messages:?}"
+    );
+    assert!(
+        messages[1].starts_with("could not build policy"),
+        "{messages:?}"
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("could not build policy"));
+
+    let usage = expect(&install.run(root, &["check", "--format", "xml"]), 2, "");
+    assert!(usage.contains("--format requires human or json"), "{usage}");
+    let usage = expect(&install.run(root, &["test", "--format", "json"]), 2, "");
+    assert!(usage.contains("unexpected argument"), "{usage}");
     assert_eq!(fs::read_dir(markers.path()).unwrap().count(), 0);
 }
