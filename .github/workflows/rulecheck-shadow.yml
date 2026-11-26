@@ -1,0 +1,69 @@
+name: Rulecheck shadow
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  exact-commit:
+    if: github.repository == 'pmdroid/rulecheck'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.17.0'
+          package-manager-cache: false
+      - name: Build trusted tools
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_WORKFLOW_SHA"
+          npm ci --ignore-scripts --no-audit
+          rustup toolchain install 1.97.1 --profile minimal
+          cargo +1.97.1 build --locked --release
+      - name: Fetch event commits into a bare repository
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          objects="$RUNNER_TEMP/rulecheck-objects"
+          git init --bare "$objects"
+          git -C "$objects" fetch --no-tags --depth=1 \
+            "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$BASE_SHA" "$CANDIDATE_SHA"
+      - name: Read policy-owner reviews
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          reviews="$RUNNER_TEMP/rulecheck-reviews.jsonl"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews?per_page=100" \
+            --jq '.[] | {owner: .user.login, state, sha: .commit_id}' > "$reviews.tmp"
+          mv "$reviews.tmp" "$reviews"
+      - name: Evaluate base and proposed policy
+        id: evaluate
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+          RULECHECK_TOOL_SHA: ${{ github.workflow_sha }}
+          RULECHECK_POLICY_REVIEWS: ${{ runner.temp }}/rulecheck-reviews.jsonl
+        run: |
+          node tools/check-ci.mjs "$RUNNER_TEMP/rulecheck-objects" \
+            "$BASE_SHA" "$CANDIDATE_SHA" target/release/rulecheck \
+            > "$RUNNER_TEMP/rulecheck-evidence.json"
+      - name: Upload evidence
+        if: ${{ !cancelled() && (steps.evaluate.outcome == 'success' || steps.evaluate.outcome == 'failure') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rulecheck-evidence
+          path: ${{ runner.temp }}/rulecheck-evidence.json
+          if-no-files-found: error

@@ -15,8 +15,8 @@ rulecheck: deterministic repository checks
   rulecheck validate                        Validate a policy from stdin
   rulecheck list [--id-prefix PREFIX]        List policy rule IDs
   rulecheck test [--id-prefix PREFIX]        Check exact fixture expectations
-  rulecheck check [--root DIR] [--id-prefix PREFIX]
-                                            Scan a checkout using policy from stdin
+  rulecheck check [--root DIR] [--commit SHA] [--id-prefix PREFIX]
+                                            Scan a checkout or exact Git commit
 
 Exit codes: 0 clean, 1 violation or fixture mismatch, 2 cannot judge.";
 
@@ -34,6 +34,7 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<bool> {
     let command = args.next().unwrap_or_else(|| "--help".into());
     let command = command.to_str().ok_or("expected a UTF-8 command")?;
     let mut root = None;
+    let mut commit = None;
     let mut prefix = None;
     while let Some(flag) = args.next() {
         match flag.to_str() {
@@ -41,6 +42,17 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<bool> {
                 root = Some(PathBuf::from(
                     args.next().ok_or("--root requires a directory")?,
                 ));
+            }
+            Some("--commit") if command == "check" && commit.is_none() => {
+                commit = Some(
+                    args.next()
+                        .and_then(|value| value.into_string().ok())
+                        .filter(|sha| {
+                            matches!(sha.len(), 40 | 64)
+                                && sha.bytes().all(|byte| byte.is_ascii_hexdigit())
+                        })
+                        .ok_or("--commit requires a full Git commit SHA")?,
+                );
             }
             Some("--id-prefix")
                 if matches!(command, "list" | "test" | "check") && prefix.is_none() =>
@@ -84,7 +96,11 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<bool> {
                 "list" => rules.iter().for_each(|rule| println!("{}", rule.id)),
                 "test" => return Ok(test(&rules)),
                 "check" => {
-                    return repository::check(root.as_deref().unwrap_or(Path::new(".")), &rules);
+                    let root = root.as_deref().unwrap_or(Path::new("."));
+                    return match commit {
+                        Some(sha) => repository::check_commit(root, &sha, &rules),
+                        None => repository::check(root, &rules),
+                    };
                 }
                 _ => {}
             }

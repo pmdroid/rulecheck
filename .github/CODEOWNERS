@@ -1,0 +1,11 @@
+/.rulecheck/ @pmdroid
+/.github/ @pmdroid
+/tools/ @pmdroid
+/src/ @pmdroid
+/schema/ @pmdroid
+/sdk/ @pmdroid
+/Cargo.toml @pmdroid
+/Cargo.lock @pmdroid
+/package.json @pmdroid
+/package-lock.json @pmdroid
+/rust-toolchain.toml @pmdroid

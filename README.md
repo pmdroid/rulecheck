@@ -43,12 +43,29 @@ Copy the [example rule](.rulecheck/rules/no-legacy-mode.rule.ts) to create a rul
 - `rulecheck validate` validates a policy from stdin, including rule IDs, globs, and regex syntax.
 - `rulecheck test` runs fixture expectations, and `rulecheck list` prints sorted rule IDs. Both read stdin.
 - `rulecheck check [--root DIR]` reads policy from stdin and checks the working-tree contents of regular files tracked in the selected Git checkout. Stage new paths with `git add` before checking. Git symlinks and submodules are skipped.
+- Pass `--commit SHA` to the builder or `rulecheck check` to read a full commit from Git, including in a bare repository. The builder reads committed rule blobs. The evaluator reports an error for a scoped symlink or submodule. Neither command consults the index or checkout in this mode.
 
 Use `--id-prefix PREFIX` with `list`, `test`, or `check` to select rules by ID prefix. A prefix with zero matches, an empty text scope, or an unreadable scoped file yields exit 2. A forbidden-path rule passes when no existing tracked regular file matches. Exit 1 means a violation or fixture mismatch. Exit 0 means the command succeeded.
 
 Use slash-separated relative globs in `paths`. A single `*` stays within one path segment and `**` can span directories. Text rules search case-sensitive literals or Rust regex patterns in UTF-8 text. Each rule reports the first match per file, with one-based lines and Unicode scalar columns. A forbidden-path finding uses location 1:1. A fixture uses `expect: null` for no finding or an exact `{ line, column }` for a finding. Text fixtures supply `content`.
 
 The builder limits each source to 128 KiB. Policy input is capped at 1 MiB and 128 rules. The scanner limits each scoped text file to 1 MiB, total scoped text to 64 MiB, Git index output to 8 MiB, and output to 10,000 findings. Run against a checkout that stays stable during the command.
+
+## Rulecheck shadow CI
+
+The `Rulecheck shadow` workflow runs for pull requests targeting `main` once the workflow is on the trusted branch. It builds the tools from the workflow commit and fetches the event's base and PR head into a bare repository. The first check uses base policy against the PR head. Separately, the workflow validates and tests policy from the PR head and checks that same head with it. A policy removal still leaves the rule active in the base check on that PR.
+
+The `rulecheck-evidence` artifact records both commits, tool provenance and versions, phase outcomes, and SHA-256 digests of the validated policy inputs. Its diff lists added, removed, and changed rules by ID. An unavailable or invalid policy has no digest. The wrapper exits 0 on success, 1 for findings or failing fixtures, and 2 when a phase cannot judge. An error takes precedence if both occur.
+
+GitHub requests review for policy and tool changes using the base branch's `.github/CODEOWNERS`. When the committed `.rulecheck` tree changes, the shadow report requires an approval from the policy owner on the exact PR head. Rerun the workflow after approval to refresh that phase. Approval cannot clear a base-policy violation. Verify that repository settings enforce code-owner approval before making the shadow check required.
+
+To reproduce with trusted tools and both Git objects available locally:
+
+```sh
+npm ci --ignore-scripts
+cargo build --locked
+node tools/check-ci.mjs /path/to/git-repo "$BASE_SHA" "$CANDIDATE_SHA" target/debug/rulecheck > evidence.json
+```
 
 ## Development
 
