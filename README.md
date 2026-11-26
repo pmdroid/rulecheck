@@ -87,5 +87,5 @@ npm run build --prefix docs
 npm run preview --prefix docs
 ```
 
-Run the four cookbook recipes after building the CLI: `bash docs/examples/run.sh`.
+Run the cookbook recipes after building the CLI: `bash docs/examples/run.sh`.
 Set `RULECHECK_DOCS_SITE` to the intended site origin and `RULECHECK_DOCS_BASE` to its path prefix when building for a subpath. The build output is in `docs/dist/`.

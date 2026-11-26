@@ -1,0 +1,63 @@
+---
+title: Rule cookbook
+description: Copyable, tested examples for every Rulecheck v1 matcher and common scope options.
+---
+
+import { Code } from '@astrojs/starlight/components';
+import literal from '../../../examples/rules/literal.rule.ts?raw';
+import regex from '../../../examples/rules/regex.rule.ts?raw';
+import path from '../../../examples/rules/path.rule.ts?raw';
+import scope from '../../../examples/rules/scope.rule.ts?raw';
+import multiScope from '../../../examples/rules/multi-scope.rule.ts?raw';
+import pathGlobs from '../../../examples/rules/path-globs.rule.ts?raw';
+
+Rulecheck v1 supports three matcher forms: **literal text**, **regex text**, and **forbidden path**. The first three recipes show those forms; the remaining recipes show how to control where they apply. The code below comes from the same TypeScript files that CI runs. Copy a recipe into `.rulecheck/rules/` and adapt its ID, paths, and fixtures.
+
+From the repository root after building the CLI:
+
+```sh
+bash docs/examples/run.sh             # all recipes
+bash docs/examples/run.sh path-globs  # one recipe
+```
+
+## Literal text
+
+Ban an exact spelling. This is a case-sensitive substring check, not a parser: `legacy_mode=true` is different from `legacy_mode = true`. Use a regex if spacing should not matter.
+
+<Code code={literal} lang="ts" title="literal.rule.ts" />
+
+## Regex text
+
+Match a line even when spacing varies. This example accepts optional whitespace and trailing comments when looking for `debug=true`. Rust regex syntax applies; use inline flags such as `(?m)` instead of JavaScript regex literals.
+
+<Code code={regex} lang="ts" title="regex.rule.ts" />
+
+## Forbidden path
+
+Stop a local-only path from entering Git. No `pattern` or fixture `content` is needed. A finding is always reported at line 1, column 1. No matching tracked regular file is a pass.
+
+<Code code={path} lang="ts" title="path.rule.ts" />
+
+## Recursive scope and a negative control
+
+The same marker appears in source and generated files, but only `src/` is in scope. Rulecheck v1 has positive path globs, not an `exclude` field. For text rules, at least one tracked file must be in scope or the check cannot judge.
+
+<Code code={scope} lang="ts" title="scope.rule.ts" />
+
+## Multiple paths and exact locations
+
+The entries in `paths` are alternatives. Here, both the core package and API service are checked; the web service is not. Literal matching reports only the first match per rule and file. Columns are one-based Unicode scalar positions, so the Greek letter before the match still counts as one column.
+
+<Code code={multiScope} lang="ts" title="multi-scope.rule.ts" />
+
+## Exact paths and advanced globs
+
+Mix an exact repository-relative path with a pattern. This example uses `**` for recursive matching, `{private,local}` for alternatives, `[0-9]` for a character range, and `?` for one non-separator character. In the preceding forbidden-path recipe, `*` matches within one path segment. Use forward slashes in all path patterns.
+
+<Code code={pathGlobs} lang="ts" title="path-globs.rule.ts" />
+
+## Reading fixture expectations
+
+Use `expect: null` for a clean or out-of-scope example, or an exact `{ line, column }` for a finding. A text fixture must provide `content`; a forbidden-path fixture must omit it. The cookbook runner checks fixture expectations and then scans real tracked files. It also verifies exit 2 for an unsupported policy version.
+
+These matchers do not parse an AST or understand whether text is inside a comment or a string. Use a language-aware linter or test for those checks.
