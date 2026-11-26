@@ -13,11 +13,13 @@ const builder = join(install, "tools", "build.mjs");
 const evaluator = join(install, "target", "release", "rulecheck");
 const guard = "RULECHECK_WRAPPER_ACTIVE";
 const maxPolicy = 1024 * 1024;
+const maxResult = 64 * 1024 * 1024;
+const timeout = 120_000;
 
 const HELP = `\
 rulecheck: deterministic repository checks
 
-  rulecheck check [--root DIR] [--commit SHA] [--id-prefix PREFIX]
+  rulecheck check [--root DIR] [--commit SHA] [--id-prefix PREFIX] [--format human|json]
                      Build policy from .rulecheck/rules/**/*.rule.ts and scan the checkout
   rulecheck test [--root DIR] [--commit SHA] [--id-prefix PREFIX]
                      Run the rule fixtures
@@ -30,6 +32,8 @@ rulecheck: deterministic repository checks
 --root selects the Git checkout root (default: current directory). Rules are parsed
 as static data by the builder in ${install}; rule modules are never executed.
 The low-level evaluator that reads policy from stdin is ${evaluator}.
+--format json writes one versioned result document (schema/result-v1.json) to stdout.
+The builder and the evaluator each stop after ${timeout / 1000} s.
 
 Exit codes: 0 clean, 1 violation or fixture mismatch, 2 cannot judge.`;
 
@@ -43,6 +47,7 @@ function fail(message) {
 function parse(command, args) {
   const options = new Map();
   const allowed = command === "validate" ? ["--root", "--commit"] : ["--root", "--commit", "--id-prefix"];
+  if (command === "check") allowed.push("--format");
   for (let index = 0; index < args.length; index += 2) {
     const [flag, value] = args.slice(index, index + 2);
     if (!allowed.includes(flag) || options.has(flag) || value === undefined || value === "") {
@@ -50,12 +55,16 @@ function parse(command, args) {
     }
     options.set(flag, value);
   }
+  if (!["human", "json", undefined].includes(options.get("--format"))) {
+    throw new UsageError("--format requires human or json");
+  }
   return options;
 }
 
 // The builder imports TypeScript; accept only the copy installed with Rulecheck.
+// Returns the builder version string that `node tools/build.mjs --version` prints.
 function checkTypeScript() {
-  const { dependencies } = JSON.parse(readFileSync(join(install, "package.json"), "utf8"));
+  const { version, dependencies } = JSON.parse(readFileSync(join(install, "package.json"), "utf8"));
   let installed = null;
   try {
     const modules = realpathSync(join(install, "node_modules"));
@@ -70,6 +79,7 @@ function checkTypeScript() {
     throw new Error(`the builder needs TypeScript ${dependencies.typescript} in ${install}/node_modules; `
       + `run npm ci --ignore-scripts there once`);
   }
+  return `rulecheck-builder ${version} (TypeScript ${installed})`;
 }
 
 function checkEvaluator() {
@@ -83,6 +93,34 @@ function checkEvaluator() {
 function status(result) {
   if (result.error) return null;
   return [0, 1, 2].includes(result.status) ? result.status : 2;
+}
+
+function spawnError(result) {
+  return result.error.code === "ETIMEDOUT"
+    ? `${evaluator} did not finish within ${timeout / 1000} s; narrow the rule scopes`
+    : `cannot start ${evaluator}: ${result.error.message}`;
+}
+
+// A check result that the evaluator could not write, in the schema/result-v1.json
+// shape. Unknown values stay null; the policy was never evaluated.
+function errorResult(env, builder, options, messages) {
+  const version = spawnSync(evaluator, ["--version"], { env, encoding: "utf8", timeout });
+  const commit = options.get("--commit") ?? null;
+  return {
+    command: "check",
+    diagnostics: messages.map((message) => ({ message, ruleId: null })),
+    exitCode: 2,
+    findings: [],
+    outcome: "error",
+    policy: { idPrefix: options.get("--id-prefix") ?? null, ruleIds: [], sha256: null, version: null },
+    resultVersion: 1,
+    source: { commit, mode: commit ? "commit" : "working-tree" },
+    tools: { builder, evaluator: version.status === 0 ? version.stdout.trim() : `rulecheck (${evaluator})` },
+  };
+}
+
+function writeJson(value) {
+  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
 function main(argv) {
@@ -108,7 +146,8 @@ function main(argv) {
   const options = parse(command, args);
   const root = resolve(options.get("--root") ?? ".");
   const commit = options.get("--commit");
-  checkTypeScript();
+  const json = options.get("--format") === "json";
+  const builderVersion = checkTypeScript();
 
   const source = ["--root", root, ...(commit ? ["--commit", commit] : [])];
   const build = spawnSync(process.execPath, [builder, ...source], {
@@ -116,23 +155,49 @@ function main(argv) {
     env,
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: maxPolicy + 1024,
-    timeout: 120_000,
+    timeout,
     killSignal: "SIGKILL",
   });
   if (build.stderr?.length) process.stderr.write(build.stderr);
   if (build.error || build.status !== 0) {
-    return fail(`could not build policy from ${root}/.rulecheck/rules${build.error ? `: ${build.error.message}` : ""}`);
+    const message = `could not build policy from ${root}/.rulecheck/rules${build.error ? `: ${build.error.message}` : ""}`;
+    if (json) {
+      const lines = build.stderr?.toString().split("\n").filter((line) => line.trim()) ?? [];
+      writeJson(errorResult(env, builderVersion, options, [...lines, message]));
+    }
+    return fail(message);
   }
 
   const evaluate = [command, ...(command === "check" ? source : [])];
   if (options.has("--id-prefix")) evaluate.push("--id-prefix", options.get("--id-prefix"));
+  if (json) evaluate.push("--format", "json");
   const result = spawnSync(evaluator, evaluate, {
     cwd: install,
     env,
     input: build.stdout,
-    stdio: ["pipe", "inherit", "inherit"],
+    stdio: ["pipe", json ? "pipe" : "inherit", "inherit"],
+    maxBuffer: maxResult,
+    timeout,
+    killSignal: "SIGKILL",
   });
-  return status(result) ?? fail(`cannot start ${evaluator}: ${result.error.message}`);
+  const code = status(result);
+  if (!json) return code ?? fail(spawnError(result));
+
+  // Record the builder that produced the policy; keep everything else as written.
+  let document = null;
+  try {
+    document = code === null ? null : JSON.parse(result.stdout);
+  } catch {
+    // Reported below as an error result.
+  }
+  if (document?.resultVersion !== 1 || document.exitCode !== code) {
+    const message = code === null ? spawnError(result) : `${evaluator} did not write a version 1 result`;
+    writeJson(errorResult(env, builderVersion, options, [message]));
+    return fail(message);
+  }
+  document.tools.builder = builderVersion;
+  writeJson(document);
+  return code;
 }
 
 try {

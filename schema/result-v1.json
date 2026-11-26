@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Rulecheck check result v1",
+  "description": "Written to stdout by rulecheck check --format json. exitCode equals the process exit status. Treat a missing or unparsable document, or one with an unknown resultVersion, as outcome error.",
+  "type": "object",
+  "required": ["resultVersion", "command", "outcome", "exitCode", "tools", "policy", "source", "findings", "diagnostics"],
+  "additionalProperties": false,
+  "properties": {
+    "resultVersion": { "const": 1 },
+    "command": { "const": "check" },
+    "outcome": { "enum": ["pass", "violation", "error"] },
+    "exitCode": { "enum": [0, 1, 2] },
+    "tools": {
+      "type": "object",
+      "required": ["evaluator", "builder"],
+      "additionalProperties": false,
+      "properties": {
+        "evaluator": { "type": "string", "pattern": "^rulecheck " },
+        "builder": { "type": ["string", "null"], "pattern": "^rulecheck-builder " }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "required": ["version", "sha256", "idPrefix", "ruleIds"],
+      "additionalProperties": false,
+      "properties": {
+        "version": { "enum": [1, null] },
+        "sha256": { "type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$" },
+        "idPrefix": { "type": ["string", "null"], "minLength": 1 },
+        "ruleIds": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": ["mode", "commit"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "enum": ["working-tree", "commit"] },
+        "commit": { "type": ["string", "null"], "pattern": "^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$" }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": { "$ref": "#/$defs/finding" }
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/diagnostic" }
+    }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "required": ["ruleId", "path", "line", "column", "byteStart", "byteEnd", "remediation"],
+      "additionalProperties": false,
+      "properties": {
+        "ruleId": { "type": "string" },
+        "path": { "type": "string", "minLength": 1 },
+        "line": { "type": "integer", "minimum": 1 },
+        "column": { "type": "integer", "minimum": 1 },
+        "byteStart": { "type": ["integer", "null"], "minimum": 0 },
+        "byteEnd": { "type": ["integer", "null"], "minimum": 0 },
+        "remediation": { "type": "string" }
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "required": ["ruleId", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "ruleId": { "type": ["string", "null"] },
+        "message": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

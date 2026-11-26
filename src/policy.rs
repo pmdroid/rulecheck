@@ -61,6 +61,12 @@ pub struct Location {
     pub column: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
 pub struct CompiledRule {
     pub id: String,
     pub remediation: String,
@@ -102,10 +108,13 @@ pub fn bounded_read(reader: impl Read, limit: usize) -> std::io::Result<Vec<u8>>
     Ok(bytes)
 }
 
-pub fn load(reader: impl Read) -> Result<Vec<CompiledRule>> {
-    let bytes = bounded_read(reader, MAX_POLICY).map_err(|err| format!("policy stdin: {err}"))?;
+pub fn read(reader: impl Read) -> Result<Vec<u8>> {
+    bounded_read(reader, MAX_POLICY).map_err(|err| format!("policy stdin: {err}"))
+}
+
+pub fn load(bytes: &[u8]) -> Result<Vec<CompiledRule>> {
     let policy: Policy =
-        serde_json::from_slice(&bytes).map_err(|err| format!("invalid policy JSON: {err}"))?;
+        serde_json::from_slice(bytes).map_err(|err| format!("invalid policy JSON: {err}"))?;
     if policy.version != 1 {
         return Err(format!(
             "unsupported policy version {}; use version 1",
@@ -246,15 +255,33 @@ impl Matcher {
     }
 
     pub fn location(&self, content: Option<&str>) -> Option<Location> {
-        let offset = match self {
-            Self::Literal(value) => content?.find(value)?,
-            Self::Regex(regex) => regex.find(content?)?.start(),
-            Self::ForbiddenPath => return Some(Location { line: 1, column: 1 }),
+        self.find(content).map(|(location, _)| location)
+    }
+
+    /// The first match as a one-based line and Unicode scalar column, plus its
+    /// zero-based, half-open UTF-8 byte range. Forbidden paths have no range.
+    pub fn find(&self, content: Option<&str>) -> Option<(Location, Option<Span>)> {
+        let span = match self {
+            Self::Literal(value) => {
+                let start = content?.find(value)?;
+                Span {
+                    start,
+                    end: start + value.len(),
+                }
+            }
+            Self::Regex(regex) => {
+                let found = regex.find(content?)?;
+                Span {
+                    start: found.start(),
+                    end: found.end(),
+                }
+            }
+            Self::ForbiddenPath => return Some((Location { line: 1, column: 1 }, None)),
         };
-        let before = &content?[..offset];
+        let before = &content?[..span.start];
         let line = before.bytes().filter(|byte| *byte == b'\n').count() + 1;
         let column = before.rsplit('\n').next()?.chars().count() + 1;
-        Some(Location { line, column })
+        Some((Location { line, column }, Some(span)))
     }
 }
 
