@@ -13,7 +13,7 @@ cargo build --locked
 bash docs/examples/run.sh
 ```
 
-The script runs the actual builder and evaluator in a temporary Git repository. It checks expected exit codes and output for four rule types and an invalid policy. It removes the temporary repository on exit.
+The script runs the actual builder and evaluator in a temporary Git repository. It checks expected exit codes and output for all cookbook recipes and an invalid policy. It removes the temporary repository on exit.
 
 For a rule in your own checkout, stage new candidate files first, then pipe the built policy into the evaluator. Leave `pipefail` on so builder errors propagate.
 
