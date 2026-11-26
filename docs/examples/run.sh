@@ -24,12 +24,12 @@ check_result() {
 }
 
 if [[ "$#" == 0 ]]; then
-  set -- literal regex path scope multi-scope path-globs
+  set -- literal regex path scope exclude multi-scope path-globs
 fi
 
 for recipe in "$@"; do
   case "$recipe" in
-    literal|regex|path|scope|multi-scope|path-globs) ;;
+    literal|regex|path|scope|exclude|multi-scope|path-globs) ;;
     *) printf 'Unknown cookbook recipe: %s\n' "$recipe" >&2; exit 2 ;;
   esac
   working="$demo/$recipe"
@@ -58,6 +58,13 @@ for recipe in "$@"; do
       printf 'legacyMarker();\n' > "$working/generated/app.ts"
       finding='src/app.ts:1:1: [source/no-legacy-marker] Replace the legacy marker in source.'
       ;;
+    exclude)
+      mkdir -p "$working/src/generated"
+      printf 'logger.info(user);\n' > "$working/src/app.ts"
+      printf 'console.log(user);\n' > "$working/src/generated/client.ts"
+      printf 'console.log(user);\n' > "$working/src/app.test.ts"
+      finding='src/app.ts:2:3: [source/no-console-log] Use the project logger instead of console.log.'
+      ;;
     multi-scope)
       mkdir -p "$working/packages/core/src" "$working/services/"{api,web}
       printf '// NEW_NAME\n' > "$working/packages/core/src/index.ts"
@@ -84,6 +91,7 @@ for recipe in "$@"; do
       git -C "$working" add -- config/local.override.toml
       ;;
     scope) printf 'legacyMarker();\n' > "$working/src/app.ts" ;;
+    exclude) printf 'export function run(user) {\n  console.log(user);\n}\n' > "$working/src/app.ts" ;;
     multi-scope)
       printf '// π OLD_NAME OLD_NAME\n' > "$working/packages/core/src/index.ts"
       printf '// OLD_NAME\n' > "$working/services/api/index.ts"

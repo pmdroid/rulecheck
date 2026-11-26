@@ -5,7 +5,10 @@ export interface Location {
 
 interface RuleFields {
   id: string;
+  /** Positive, case-sensitive repository-relative globs. A file is in scope when any entry matches. */
   paths: readonly string[];
+  /** Optional globs removed from `paths`. A file matching any entry is out of scope for checks and fixtures. */
+  exclude?: readonly string[];
   remediation: string;
 }
 
