@@ -21,6 +21,14 @@ The installed `rulecheck` command builds policy from `.rulecheck/rules/**/*.rule
 | 1 | One or more findings or fixture mismatches. |
 | 2 | Could not judge, such as an invalid rule file, a builder failure, unreadable text, or a text rule matching no files. |
 
+Findings and fixture mismatches go to stdout, one per line. Exit 2 diagnostics go to stderr. `validate` prints nothing on success, and `test` prints a count such as `4 fixtures passed`.
+
+`--commit` takes a full 40-character SHA; a short SHA or `HEAD` exits 2. Resolve it first:
+
+```bash
+rulecheck check --commit "$(git rev-parse HEAD)"
+```
+
 Findings report the first match per rule and file. Columns count Unicode scalar values, not bytes; forbidden paths use `1:1`. Narrow broad globs if the scanner reports an input limit.
 
 ## Low-level pipeline
