@@ -28,9 +28,11 @@ rulecheck: deterministic repository checks
   rulecheck validate [--root DIR] [--commit SHA]
                      Build and validate the policy
   rulecheck schema   Print the version 1 JSON schema
+  rulecheck help     Print this help
 
---root selects the Git checkout root (default: current directory). Rules are parsed
-as static data by the builder in ${install}; rule modules are never executed.
+--root selects the Git checkout root (default: current directory). --commit takes a
+full 40- or 64-character SHA; resolve HEAD or a short SHA with git rev-parse first.
+Rules are parsed as static data by the builder in ${install}; rule modules are never executed.
 The low-level evaluator that reads policy from stdin is ${evaluator}.
 --format json writes one versioned result document (schema/result-v1.json) to stdout.
 The builder and the evaluator each stop after ${timeout / 1000} s.
@@ -38,6 +40,9 @@ The builder and the evaluator each stop after ${timeout / 1000} s.
 Exit codes: 0 clean, 1 violation or fixture mismatch, 2 cannot judge.`;
 
 class UsageError extends Error {}
+
+const FULL_SHA = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i;
+const ROOT_HINT = "run from the checkout root or pass --root";
 
 function fail(message) {
   console.error(`rulecheck: ${message}`);
@@ -51,14 +56,32 @@ function parse(command, args) {
   for (let index = 0; index < args.length; index += 2) {
     const [flag, value] = args.slice(index, index + 2);
     if (!allowed.includes(flag) || options.has(flag) || value === undefined || value === "") {
-      throw new UsageError(`unexpected argument ${JSON.stringify(flag)}; run rulecheck --help`);
+      throw new UsageError(`unexpected argument ${JSON.stringify(flag)}; run rulecheck help`);
     }
     options.set(flag, value);
   }
   if (!["human", "json", undefined].includes(options.get("--format"))) {
     throw new UsageError("--format requires human or json");
   }
+  const commit = options.get("--commit");
+  if (commit !== undefined && !FULL_SHA.test(commit)) {
+    throw new UsageError(`--commit requires a full 40- or 64-character Git commit SHA, not ${JSON.stringify(commit)}; `
+      + `resolve it first, e.g. --commit "$(git rev-parse ${/^[\w./@^~-]+$/.test(commit) ? commit : "HEAD"})"`);
+  }
   return options;
+}
+
+// A working-tree scan reads .rulecheck/rules under --root, so --root must be the top
+// of the checkout. Reported before the build so the message names the real cause.
+function checkRoot(root, env) {
+  const git = (args) => spawnSync("git", ["--no-replace-objects", "-C", root, ...args], { env, encoding: "utf8", timeout });
+  const prefix = git(["rev-parse", "--show-prefix"]);
+  if (prefix.error || prefix.status !== 0) throw new UsageError(`${root} is not a Git checkout; ${ROOT_HINT}`);
+  if (prefix.stdout.trim()) {
+    const top = git(["rev-parse", "--show-toplevel"]).stdout?.trim();
+    throw new UsageError(`${root} is a subdirectory of a Git checkout, not its root; ${ROOT_HINT}`
+      + (top ? ` (--root ${top})` : ""));
+  }
 }
 
 // The builder imports TypeScript; accept only the copy installed with Rulecheck.
@@ -128,9 +151,13 @@ function main(argv) {
     return fail(`${evaluator} started the rulecheck wrapper again; it must be the Rust evaluator binary`);
   }
   const env = { ...process.env, [guard]: "1" };
-  const [command = "--help", ...args] = argv;
+  const [command, ...args] = argv;
 
-  if (["-h", "--help"].includes(command) && args.length === 0) {
+  if (command === undefined) {
+    console.error(HELP);
+    return fail("missing command; run rulecheck help");
+  }
+  if (["help", "-h", "--help"].includes(command) && args.length === 0) {
     console.log(HELP);
     return 0;
   }
@@ -140,13 +167,14 @@ function main(argv) {
     return status(result) ?? fail(`cannot start ${evaluator}: ${result.error.message}`);
   }
   if (!["check", "test", "list", "validate"].includes(command)) {
-    throw new UsageError(`unknown command ${JSON.stringify(command)}; run rulecheck --help`);
+    throw new UsageError(`unknown command ${JSON.stringify(command)}; run rulecheck help`);
   }
 
   const options = parse(command, args);
   const root = resolve(options.get("--root") ?? ".");
   const commit = options.get("--commit");
   const json = options.get("--format") === "json";
+  if (!commit) checkRoot(root, env);
   const builderVersion = checkTypeScript();
 
   const source = ["--root", root, ...(commit ? ["--commit", commit] : [])];
@@ -160,7 +188,8 @@ function main(argv) {
   });
   if (build.stderr?.length) process.stderr.write(build.stderr);
   if (build.error || build.status !== 0) {
-    const message = `could not build policy from ${root}/.rulecheck/rules${build.error ? `: ${build.error.message}` : ""}`;
+    const rules = commit ? `.rulecheck/rules at commit ${commit} in ${root}` : `${root}/.rulecheck/rules`;
+    const message = `could not build policy from ${rules}${build.error ? `: ${build.error.message}` : ""}`;
     if (json) {
       const lines = build.stderr?.toString().split("\n").filter((line) => line.trim()) ?? [];
       writeJson(errorResult(env, builderVersion, options, [...lines, message]));

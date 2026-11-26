@@ -18,6 +18,7 @@ rulecheck: deterministic repository checks
 
   npm run --silent build -- [--root DIR]    Emit a policy from TypeScript rules
   rulecheck schema                          Print the version 1 JSON schema
+  rulecheck help                            Print this help
   rulecheck validate                        Validate a policy from stdin
   rulecheck list [--id-prefix PREFIX]        List policy rule IDs
   rulecheck test [--id-prefix PREFIX]        Check exact fixture expectations
@@ -25,6 +26,9 @@ rulecheck: deterministic repository checks
                                             Scan a checkout or exact Git commit
 
 Exit codes: 0 clean, 1 violation or fixture mismatch, 2 cannot judge.";
+
+const COMMIT_HINT: &str = "--commit requires a full 40- or 64-character Git commit SHA; \
+resolve it first, e.g. --commit \"$(git rev-parse HEAD)\"";
 
 #[derive(Clone, Copy, PartialEq)]
 enum Format {
@@ -43,7 +47,10 @@ fn main() -> ExitCode {
 }
 
 fn run(mut args: impl Iterator<Item = OsString>) -> Result<u8> {
-    let command = args.next().unwrap_or_else(|| "--help".into());
+    let Some(command) = args.next() else {
+        eprintln!("{HELP}");
+        return Err("missing command; run rulecheck help".into());
+    };
     let command = command.to_str().ok_or("expected a UTF-8 command")?;
     let mut root = None;
     let mut commit = None;
@@ -64,7 +71,7 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<u8> {
                             matches!(sha.len(), 40 | 64)
                                 && sha.bytes().all(|byte| byte.is_ascii_hexdigit())
                         })
-                        .ok_or("--commit requires a full Git commit SHA")?,
+                        .ok_or(COMMIT_HINT)?,
                 );
             }
             Some("--id-prefix")
@@ -85,15 +92,13 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<u8> {
                 };
             }
             _ => {
-                return Err(format!(
-                    "unexpected argument {flag:?}; run rulecheck --help"
-                ));
+                return Err(format!("unexpected argument {flag:?}; run rulecheck help"));
             }
         }
     }
 
     match command {
-        "-h" | "--help" => println!("{HELP}"),
+        "help" | "-h" | "--help" => println!("{HELP}"),
         "-V" | "--version" => println!("rulecheck {}", env!("CARGO_PKG_VERSION")),
         "schema" => print!("{}", include_str!("../schema/policy-v1.json")),
         "check" => {
@@ -114,7 +119,7 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<u8> {
                 _ => {}
             }
         }
-        _ => return Err(format!("unknown command {command:?}; run rulecheck --help")),
+        _ => return Err(format!("unknown command {command:?}; run rulecheck help")),
     }
     Ok(0)
 }
