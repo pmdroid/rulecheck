@@ -56,6 +56,15 @@ function checkRoot(root) {
   }
 }
 
+function describe(stat) {
+  if (!stat) return "missing entry";
+  if (stat.isSymbolicLink()) return "symlink";
+  if (stat.isFIFO()) return "FIFO";
+  if (stat.isSocket()) return "socket";
+  if (stat.isBlockDevice() || stat.isCharacterDevice()) return "device";
+  return "non-regular entry";
+}
+
 function discover(root) {
   checkRoot(root);
 
@@ -82,8 +91,15 @@ function discover(root) {
         if (++entries > maxEntries) throw new Error(`${rulesDir}: too many directory entries`);
         const path = `${directory}/${entry.name}`;
         if (entry.name === ".git" || gitlinks.has(path)) continue;
-        if (entry.isDirectory() && !statIfPresent(join(root, path, ".git"))) walk(path, depth + 1);
-        if (entry.isFile() && entry.name.endsWith(".rule.ts")) {
+        // Some file systems report no entry type, so fall back to lstat. Anything that is
+        // not a regular file or a real directory fails, as --commit does for Git entries,
+        // so a rule can't silently drop out of the policy.
+        const kind = entry.isFile() || entry.isDirectory() ? entry : statIfPresent(join(root, path));
+        if (!kind?.isFile() && !kind?.isDirectory()) {
+          throw new Error(`${path}: expected a regular file or directory, not a ${describe(kind)}`);
+        }
+        if (kind.isDirectory() && !statIfPresent(join(root, path, ".git"))) walk(path, depth + 1);
+        if (kind.isFile() && entry.name.endsWith(".rule.ts")) {
           if (rules.length >= maxRules) throw new Error(`${rulesDir}: at most ${maxRules} rules are supported`);
           rules.push(path);
         }
