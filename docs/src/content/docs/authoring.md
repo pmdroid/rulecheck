@@ -4,7 +4,7 @@ description: Define, test, and retire a rule safely.
 ---
 
 1. Copy a tested rule from the Rule cookbook into `.rulecheck/rules/`. Nested directories work. Files must end in `.rule.ts`.
-2. Choose a stable lowercase ID such as `config/no-debug-true`, positive repository-relative `paths` globs, and a concrete remediation.
+2. Choose a stable lowercase ID such as `config/no-debug-true`, repository-relative `paths` globs, an optional `exclude` list for files to leave out, and a concrete remediation.
 3. Add at least one fixture that finds the bug and one that passes. A finding uses exact one-based line and column; `null` means no finding. Add a fixture outside the scope if the scope matters.
 4. Type-check against the SDK, validate the built policy, and run the fixtures. Inspect findings in a representative checkout before making a rule authoritative.
 

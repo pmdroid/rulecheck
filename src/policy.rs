@@ -22,6 +22,8 @@ struct Rule {
     id: String,
     kind: Kind,
     paths: Vec<String>,
+    #[serde(default, deserialize_with = "present")]
+    exclude: Option<Vec<String>>,
     remediation: String,
     #[serde(default, deserialize_with = "present")]
     pattern: Option<Pattern>,
@@ -63,6 +65,7 @@ pub struct CompiledRule {
     pub id: String,
     pub remediation: String,
     pub scope: GlobSet,
+    pub exclude: GlobSet,
     pub matcher: Matcher,
     pub fixtures: Vec<Fixture>,
 }
@@ -152,23 +155,12 @@ impl Rule {
         if !(1..=16).contains(&self.paths.len()) {
             return Err("provide 1 to 16 path globs".into());
         }
-        let mut scope = GlobSetBuilder::new();
-        for path in &self.paths {
-            if !valid_path(path) || path.len() > 256 {
-                return Err(format!(
-                    "invalid path glob {path:?}; use a relative slash-separated glob up to 256 bytes"
-                ));
-            }
-            let glob = GlobBuilder::new(path)
-                .literal_separator(true)
-                .backslash_escape(false)
-                .build()
-                .map_err(|err| format!("invalid path glob: {err}"))?;
-            scope.add(glob);
-        }
-        let scope = scope
-            .build()
-            .map_err(|err| format!("invalid path scope: {err}"))?;
+        let scope = globs("path", &self.paths)?;
+        let exclude = match &self.exclude {
+            None => GlobSet::empty(),
+            Some(exclude) if (1..=16).contains(&exclude.len()) => globs("exclude", exclude)?,
+            Some(_) => return Err("provide 1 to 16 exclude globs or omit exclude".into()),
+        };
 
         let matcher = match (self.kind, self.pattern) {
             (Kind::Text, Some(pattern)) => Matcher::compile(pattern)?,
@@ -204,9 +196,29 @@ impl Rule {
             remediation: self.remediation,
             matcher,
             scope,
+            exclude,
             fixtures: self.fixtures,
         })
     }
+}
+
+fn globs(field: &str, patterns: &[String]) -> Result<GlobSet> {
+    let mut set = GlobSetBuilder::new();
+    for pattern in patterns {
+        if !valid_path(pattern) || pattern.len() > 256 {
+            return Err(format!(
+                "invalid {field} glob {pattern:?}; use a relative slash-separated glob up to 256 bytes"
+            ));
+        }
+        let glob = GlobBuilder::new(pattern)
+            .literal_separator(true)
+            .backslash_escape(false)
+            .build()
+            .map_err(|err| format!("invalid {field} glob: {err}"))?;
+        set.add(glob);
+    }
+    set.build()
+        .map_err(|err| format!("invalid {field} scope: {err}"))
 }
 
 impl Matcher {
@@ -248,6 +260,6 @@ impl Matcher {
 
 impl CompiledRule {
     pub fn applies_to(&self, path: &str) -> bool {
-        self.scope.is_match(path)
+        self.scope.is_match(path) && !self.exclude.is_match(path)
     }
 }

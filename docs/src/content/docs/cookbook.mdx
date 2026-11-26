@@ -8,6 +8,7 @@ import literal from '../../../examples/rules/literal.rule.ts?raw';
 import regex from '../../../examples/rules/regex.rule.ts?raw';
 import path from '../../../examples/rules/path.rule.ts?raw';
 import scope from '../../../examples/rules/scope.rule.ts?raw';
+import exclude from '../../../examples/rules/exclude.rule.ts?raw';
 import multiScope from '../../../examples/rules/multi-scope.rule.ts?raw';
 import pathGlobs from '../../../examples/rules/path-globs.rule.ts?raw';
 
@@ -40,9 +41,15 @@ Stop a local-only path from entering Git. No `pattern` or fixture `content` is n
 
 ## Recursive scope and a negative control
 
-The same marker appears in source and generated files, but only `src/` is in scope. Rulecheck v1 has positive path globs, not an `exclude` field. For text rules, at least one tracked file must be in scope or the check cannot judge.
+The same marker appears in source and generated files, but only `src/` is in scope. For text rules, at least one tracked file must be in scope or the check cannot judge.
 
 <Code code={scope} lang="ts" title="scope.rule.ts" />
+
+## Excluded paths
+
+Use `exclude` to drop files from a broad scope. A file is checked when it matches `paths` and nothing in `exclude`. Fixtures use the same scope, so add a fixture for each excluded area. Both lists are case-sensitive, which means `src/Generated/` is still in scope here. If a scope such as `**/*.ts` would also cover the rule sources, add `.rulecheck/**` to `exclude`.
+
+<Code code={exclude} lang="ts" title="exclude.rule.ts" />
 
 ## Multiple paths and exact locations
 
