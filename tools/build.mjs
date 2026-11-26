@@ -10,6 +10,9 @@ const maxEntries = 20_000;
 const marker = "@rulecheck/sdk";
 const rulesDir = ".rulecheck/rules";
 const utf8 = new TextDecoder("utf-8", { fatal: true });
+const FULL_SHA = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i;
+const COMMIT_HINT = '--commit requires a full 40- or 64-character Git commit SHA; resolve it first, e.g. --commit "$(git rev-parse HEAD)"';
+const ROOT_HINT = "run from the checkout root or pass --root";
 
 function readRule(path) {
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -43,10 +46,18 @@ function git(root, args, maxBuffer = 8 * 1024 * 1024) {
   return result.stdout;
 }
 
-function discover(root) {
-  if (!lstatSync(root).isDirectory() || git(root, ["rev-parse", "--show-prefix"]).toString().trim()) {
-    throw new Error("use the root directory of a Git checkout");
+// The working-tree root must be the top of a Git checkout, not a subdirectory.
+function checkRoot(root) {
+  if (!statIfPresent(root)?.isDirectory()) throw new Error(`${root} is not a directory; ${ROOT_HINT}`);
+  const prefix = spawnSync("git", ["--no-replace-objects", "-C", root, "rev-parse", "--show-prefix"], { timeout: 15_000 });
+  if (prefix.error || prefix.status !== 0) throw new Error(`${root} is not a Git checkout; ${ROOT_HINT}`);
+  if (prefix.stdout.toString().trim()) {
+    throw new Error(`${root} is a subdirectory of a Git checkout, not its root; ${ROOT_HINT}`);
   }
+}
+
+function discover(root) {
+  checkRoot(root);
 
   const gitlinks = new Set();
   const index = git(root, ["ls-files", "--stage", "-z", "--", ".rulecheck"]);
@@ -87,9 +98,10 @@ function discover(root) {
 }
 
 function committedRules(root, sha) {
-  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(sha)
-      || git(root, ["cat-file", "-t", sha], 32).toString() !== "commit\n") {
-    throw new Error("--commit requires a full Git commit SHA");
+  if (!FULL_SHA.test(sha)) throw new Error(COMMIT_HINT);
+  const type = spawnSync("git", ["--no-replace-objects", "-C", root, "cat-file", "-t", sha], { timeout: 15_000 });
+  if (type.error || type.status !== 0 || type.stdout.toString() !== "commit\n") {
+    throw new Error(`--commit ${sha} is not a commit in ${root}; fetch it or pass the right --root`);
   }
   const tree = utf8.decode(git(root, ["ls-tree", "--full-tree", "-r", "-t", "-z", sha, "--", ".rulecheck"]));
   const rules = new Map();
@@ -122,6 +134,72 @@ function committedRules(root, sha) {
   return rules;
 }
 
+const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+const isStrings = (value) => Array.isArray(value) && value.every((item) => typeof item === "string");
+const isCount = (value) => Number.isInteger(value) && value >= 1;
+const list = (names) => names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+
+// Checks the property names and value types of schema/policy-v1.json, so a typo is
+// reported in the rule file. The evaluator still validates limits, IDs, globs, and
+// regex syntax. fail(container, key, reason, rewrite) throws at the source position of
+// container[key], or of the whole rule when container is undefined.
+function checkShape(rule, fail) {
+  function fields(object, label, known, required) {
+    for (const key of Object.keys(object)) {
+      if (!known.includes(key)) fail(object, key, `Unknown property ${key} in ${label}`, `Use ${list(known)}.`);
+    }
+    for (const key of required) {
+      if (!Object.hasOwn(object, key)) fail(object, undefined, `Missing property ${key} in ${label}`, `Add ${key}.`);
+    }
+  }
+  function expect(object, key, label, valid, want) {
+    if (Object.hasOwn(object, key) && !valid(object[key])) {
+      fail(object, key, `${label} ${key} must be ${want}`, `Change ${key} to ${want}.`);
+    }
+  }
+
+  if (!isObject(rule)) fail(undefined, undefined, "The rule must be an object", "Pass an object literal to defineRule.");
+  fields(rule, "the rule", ["id", "kind", "paths", "exclude", "remediation", "pattern", "fixtures"],
+    ["id", "kind", "paths", "remediation", "fixtures"]);
+  expect(rule, "id", "rule", (value) => typeof value === "string", "a string");
+  expect(rule, "kind", "rule", (value) => ["text", "forbidden-path"].includes(value), '"text" or "forbidden-path"');
+  expect(rule, "paths", "rule", isStrings, "an array of glob strings");
+  expect(rule, "exclude", "rule", isStrings, "an array of glob strings");
+  expect(rule, "remediation", "rule", (value) => typeof value === "string", "a string");
+  expect(rule, "fixtures", "rule", (value) => Array.isArray(value), "an array of fixtures");
+  const text = rule.kind === "text";
+  if (text && !Object.hasOwn(rule, "pattern")) {
+    fail(rule, undefined, "Text rules require a pattern", 'Add pattern: { kind: "literal", value: "..." }.');
+  }
+  if (!text && Object.hasOwn(rule, "pattern")) {
+    fail(rule, "pattern", "Forbidden-path rules have no pattern", "Remove pattern.");
+  }
+  if (text) {
+    expect(rule, "pattern", "rule", isObject, "a pattern object");
+    fields(rule.pattern, "the pattern", ["kind", "value"], ["kind", "value"]);
+    expect(rule.pattern, "kind", "pattern", (value) => ["literal", "regex"].includes(value), '"literal" or "regex"');
+    expect(rule.pattern, "value", "pattern", (value) => typeof value === "string", "a string");
+  }
+
+  for (const [index, fixture] of rule.fixtures.entries()) {
+    const label = `fixture ${index + 1}`;
+    if (!isObject(fixture)) fail(rule.fixtures, index, `${label} must be an object`, "Write { path, content, expect }.");
+    fields(fixture, label, ["path", "content", "expect"], text ? ["path", "content", "expect"] : ["path", "expect"]);
+    expect(fixture, "path", label, (value) => typeof value === "string", "a string");
+    expect(fixture, "content", label, (value) => typeof value === "string", "a string");
+    if (!text && Object.hasOwn(fixture, "content")) {
+      fail(fixture, "content", `${label} has content, but forbidden-path fixtures match the path only`, "Remove content.");
+    }
+    expect(fixture, "expect", label, (value) => value === null || isObject(value),
+      "null or { line, column }");
+    if (fixture.expect !== null) {
+      fields(fixture.expect, `${label} expect`, ["line", "column"], ["line", "column"]);
+      expect(fixture.expect, "line", `${label} expect`, isCount, "a one-based integer");
+      expect(fixture.expect, "column", `${label} expect`, isCount, "a one-based integer");
+    }
+  }
+}
+
 function parse(path, source) {
   const file = ts.createSourceFile(path, source, ts.ScriptTarget.ESNext, false, ts.ScriptKind.TS);
   function reject(position, reason, rewrite) {
@@ -133,6 +211,15 @@ function parse(path, source) {
   if (diagnostic) {
     reject(diagnostic.start ?? 0, ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
       "Use plain literals and export default defineRule({...}).");
+  }
+
+  // Source positions of each object and array literal and of their properties or
+  // elements, so shape errors point at the rule file instead of the policy JSON.
+  const positions = new WeakMap();
+  function at(container, key) {
+    const entry = positions.get(container);
+    const node = (key !== undefined && entry?.keys.get(String(key))) || entry?.node;
+    return node ? node.getStart(file) : 0;
   }
 
   const bindings = new Map();
@@ -147,9 +234,15 @@ function parse(path, source) {
     if (node.kind === ts.SyntaxKind.NullKeyword) return null;
     if (ts.isNumericLiteral(node) && Number.isFinite(Number(node.text))) return Number(node.text);
     if (ts.isIdentifier(node) && bindings.has(node.text)) return bindings.get(node.text);
-    if (ts.isArrayLiteralExpression(node)) return node.elements.map(child);
+    if (ts.isArrayLiteralExpression(node)) {
+      const array = node.elements.map(child);
+      positions.set(array, { node, keys: new Map(node.elements.map((element, index) => [String(index), element])) });
+      return array;
+    }
     if (ts.isObjectLiteralExpression(node)) {
       const object = Object.create(null);
+      const keys = new Map();
+      positions.set(object, { node, keys });
       for (const property of node.properties) {
         const key = property.name;
         if (!ts.isPropertyAssignment(property) ||
@@ -159,6 +252,7 @@ function parse(path, source) {
         if (Object.hasOwn(object, key.text)) {
           reject(key.getStart(file), `Duplicate property ${key.text}`, "Keep one value for the property.");
         }
+        keys.set(key.text, key);
         object[key.text] = child(property.initializer);
       }
       return object;
@@ -193,7 +287,10 @@ function parse(path, source) {
       const call = statement.expression;
       if (ts.isCallExpression(call) && ts.isIdentifier(call.expression) && call.expression.text === "defineRule"
           && call.arguments.length === 1 && !call.typeArguments && !call.questionDotToken) {
-        return literal(call.arguments[0]);
+        const rule = literal(call.arguments[0]);
+        checkShape(rule, (container, key, reason, rewrite) => reject(
+          container === undefined ? call.arguments[0].getStart(file) : at(container, key), reason, rewrite));
+        return rule;
       }
     }
 

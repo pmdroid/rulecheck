@@ -336,6 +336,151 @@ fn displays_help() {
 }
 
 #[test]
+fn accepts_help_and_rejects_a_bare_call() {
+    let output = cli(&["help"], b"", Path::new(ROOT));
+    expect(&output, 0);
+    assert_eq!(output.stdout, cli(&["--help"], b"", Path::new(ROOT)).stdout);
+    assert!(output.stderr.is_empty());
+
+    let output = cli(&[], b"", Path::new(ROOT));
+    expect(&output, 2);
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.starts_with("rulecheck: deterministic repository checks\n"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.ends_with("\nrulecheck: missing command; run rulecheck help\n"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn check_rejects_a_commit_that_is_not_a_full_sha() {
+    for commit in ["HEAD", "a0504e7"] {
+        let output = cli(&["check", "--commit", commit], b"", Path::new(ROOT));
+        expect(&output, 2);
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "rulecheck: --commit requires a full 40- or 64-character Git commit SHA; \
+             resolve it first, e.g. --commit \"$(git rev-parse HEAD)\"\n"
+        );
+    }
+}
+
+#[test]
+fn builder_reports_rule_shape_errors_at_the_rule_file() {
+    let repo = tempfile::tempdir().unwrap();
+    let root = repo.path();
+    git(root, &["init", "-q"]);
+    let rule = root.join(".rulecheck/rules/demo.rule.ts");
+    fs::create_dir_all(rule.parent().unwrap()).unwrap();
+    for (from, to, message) in [
+        (
+            "line: 2, column: 1",
+            "line: 2, col: 1",
+            "16:26: Unknown property col in fixture 2 expect. Use line and column.",
+        ),
+        (
+            "remediation:",
+            "remedy:",
+            "10:3: Unknown property remedy in the rule. \
+             Use id, kind, paths, exclude, remediation, pattern and fixtures.",
+        ),
+        (
+            "content: \"legacy_mode = false\\n\", ",
+            "",
+            "12:5: Missing property content in fixture 1. Add content.",
+        ),
+        (
+            "expect: null",
+            "expect: { line: 0, column: 1 }",
+            "12:76: fixture 1 expect line must be a one-based integer. \
+             Change line to a one-based integer.",
+        ),
+        (
+            "[\"config/*.toml\"]",
+            "\"config/*.toml\"",
+            "8:3: rule paths must be an array of glob strings. \
+             Change paths to an array of glob strings.",
+        ),
+        (
+            "kind: \"literal\"",
+            "kind: \"glob\"",
+            "9:14: pattern kind must be \"literal\" or \"regex\". \
+             Change kind to \"literal\" or \"regex\".",
+        ),
+        (
+            "kind: \"text\"",
+            "kind: \"forbidden-path\"",
+            "9:3: Forbidden-path rules have no pattern. Remove pattern.",
+        ),
+    ] {
+        assert!(EXAMPLE.contains(from), "{from}");
+        fs::write(&rule, EXAMPLE.replace(from, to)).unwrap();
+        let output = build(root);
+        expect(&output, 2);
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            format!("rulecheck build: .rulecheck/rules/demo.rule.ts:{message}\n")
+        );
+    }
+}
+
+#[test]
+fn builder_names_the_real_cause_of_a_bad_root_or_commit() {
+    let repo = tempfile::tempdir().unwrap();
+    let root = repo.path();
+    git(root, &["init", "-q"]);
+    fs::create_dir_all(root.join(".rulecheck/rules")).unwrap();
+    fs::write(root.join(".rulecheck/rules/demo.rule.ts"), EXAMPLE).unwrap();
+    fs::create_dir(root.join("config")).unwrap();
+    let run = |args: &[&str]| {
+        let output = Command::new("node")
+            .current_dir(root)
+            .arg(Path::new(ROOT).join("tools/build.mjs"))
+            .args(args)
+            .output()
+            .unwrap();
+        expect(&output, 2);
+        String::from_utf8(output.stderr).unwrap()
+    };
+
+    assert_eq!(
+        run(&["--commit", "HEAD"]),
+        "rulecheck build: --commit requires a full 40- or 64-character Git commit SHA; \
+         resolve it first, e.g. --commit \"$(git rev-parse HEAD)\"\n"
+    );
+    let missing = "a".repeat(40);
+    let repo_root = root.display().to_string();
+    assert_eq!(
+        run(&["--commit", &missing, "--root", &repo_root]),
+        format!(
+            "rulecheck build: --commit {missing} is not a commit in {repo_root}; \
+             fetch it or pass the right --root\n"
+        )
+    );
+    let subdir = root.join("config").display().to_string();
+    assert_eq!(
+        run(&["--root", &subdir]),
+        format!(
+            "rulecheck build: {subdir} is a subdirectory of a Git checkout, not its root; \
+             run from the checkout root or pass --root\n"
+        )
+    );
+    let missing = root.join("missing").display().to_string();
+    assert_eq!(
+        run(&["--root", &missing]),
+        format!(
+            "rulecheck build: {missing} is not a directory; \
+             run from the checkout root or pass --root\n"
+        )
+    );
+}
+
+#[test]
 fn displays_version() {
     let output = cli(&["--version"], b"", Path::new(ROOT));
     expect(&output, 0);
