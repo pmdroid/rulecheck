@@ -22,13 +22,18 @@ rulecheck: deterministic repository checks
   rulecheck validate                        Validate a policy from stdin
   rulecheck list [--id-prefix PREFIX]        List policy rule IDs
   rulecheck test [--id-prefix PREFIX]        Check exact fixture expectations
-  rulecheck check [--root DIR] [--commit SHA] [--id-prefix PREFIX] [--format human|json]
+  rulecheck check [--root DIR] [--commit SHA | --untracked] [--id-prefix PREFIX] [--format human|json]
                                             Scan a checkout or exact Git commit
+
+--untracked adds non-ignored untracked files to a working-tree check.
 
 Exit codes: 0 clean, 1 violation or fixture mismatch, 2 cannot judge.";
 
 const COMMIT_HINT: &str = "--commit requires a full 40- or 64-character Git commit SHA; \
 resolve it first, e.g. --commit \"$(git rev-parse HEAD)\"";
+
+const UNTRACKED_COMMIT: &str = "--untracked applies to working-tree checks only; \
+a commit has no untracked files, so drop --untracked or --commit";
 
 #[derive(Clone, Copy, PartialEq)]
 enum Format {
@@ -56,6 +61,7 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<u8> {
     let mut commit = None;
     let mut prefix = None;
     let mut format = None;
+    let mut untracked = false;
     while let Some(flag) = args.next() {
         match flag.to_str() {
             Some("--root") if command == "check" && root.is_none() => {
@@ -74,6 +80,7 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<u8> {
                         .ok_or(COMMIT_HINT)?,
                 );
             }
+            Some("--untracked") if command == "check" && !untracked => untracked = true,
             Some("--id-prefix")
                 if matches!(command, "list" | "test" | "check") && prefix.is_none() =>
             {
@@ -97,6 +104,10 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<u8> {
         }
     }
 
+    if untracked && commit.is_some() {
+        return Err(UNTRACKED_COMMIT.into());
+    }
+
     match command {
         "help" | "-h" | "--help" => println!("{HELP}"),
         "-V" | "--version" => println!("rulecheck {}", env!("CARGO_PKG_VERSION")),
@@ -106,6 +117,7 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<u8> {
             return check(
                 root,
                 commit.as_deref(),
+                untracked,
                 prefix.as_deref(),
                 format.unwrap_or(Format::Human),
             );
@@ -145,7 +157,13 @@ const EMPTY_SCOPES: &str = "one or more text rules matched no repository files";
 /// the line format `path:line:column: [id] remediation`. JSON output always
 /// writes one result document to stdout, including when the scan cannot judge,
 /// and repeats diagnostics on stderr in the human form.
-fn check(root: &Path, commit: Option<&str>, prefix: Option<&str>, format: Format) -> Result<u8> {
+fn check(
+    root: &Path,
+    commit: Option<&str>,
+    untracked: bool,
+    prefix: Option<&str>,
+    format: Format,
+) -> Result<u8> {
     let bytes = policy::read(io::stdin().lock());
     let digest = bytes
         .as_ref()
@@ -161,7 +179,7 @@ fn check(root: &Path, commit: Option<&str>, prefix: Option<&str>, format: Format
         .map_err(Clone::clone)
         .and_then(|rules| match commit {
             Some(sha) => repository::check_commit(root, sha, rules),
-            None => repository::check(root, rules),
+            None => repository::check(root, rules, untracked),
         });
 
     if format == Format::Human {
@@ -216,6 +234,14 @@ fn check(root: &Path, commit: Option<&str>, prefix: Option<&str>, format: Format
         .map(|rule| rule.id.as_str())
         .collect();
     let outcome = ["pass", "violation", "error"][usize::from(code)];
+    let mut source = json!({
+        "mode": if commit.is_some() { "commit" } else { "working-tree" },
+        "commit": commit,
+    });
+    // Present only when requested, so default results keep their v1 shape.
+    if untracked {
+        source["untracked"] = json!(true);
+    }
     let result = json!({
         "resultVersion": RESULT_VERSION,
         "command": "check",
@@ -228,10 +254,7 @@ fn check(root: &Path, commit: Option<&str>, prefix: Option<&str>, format: Format
             "idPrefix": prefix,
             "ruleIds": ids,
         },
-        "source": {
-            "mode": if commit.is_some() { "commit" } else { "working-tree" },
-            "commit": commit,
-        },
+        "source": source,
         "findings": findings,
         "diagnostics": diagnostics,
     });

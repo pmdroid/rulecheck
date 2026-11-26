@@ -289,6 +289,33 @@ fn json_results_fail_closed_with_diagnostics() {
             .contains("no rule IDs match")
     );
 
+    // --untracked is recorded in the source only when it is passed.
+    assert!(result["source"].get("untracked").is_none());
+    write(root, "src/new.ts", b"OLD_NAME\n");
+    let (result, _) = check_json(&["--untracked"], &only, root, 2);
+    assert_eq!(
+        result["source"],
+        json!({ "mode": "working-tree", "commit": null, "untracked": true })
+    );
+    fs::remove_file(root.join("src/bad.ts")).unwrap();
+    let (result, _) = check_json(&["--untracked"], &only, root, 1);
+    assert_eq!(result["source"]["untracked"], true);
+    let paths: Vec<_> = result["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|finding| finding["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(paths, ["src/app.ts", "src/new.ts"]);
+    let (result, _) = check_json(&[], &only, root, 1);
+    assert_eq!(
+        result["source"],
+        json!({ "mode": "working-tree", "commit": null })
+    );
+    let mut bad = result.clone();
+    bad["source"]["untracked"] = json!(false);
+    assert!(!common::violations(&result_schema(), &bad).is_empty());
+
     // Bad arguments never produce a document.
     let output = cli(&["check", "--format", "xml"], &only, root);
     assert_eq!(output.status.code(), Some(2));

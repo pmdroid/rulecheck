@@ -1,5 +1,6 @@
 //! Pins the published Rulecheck v1 scan and policy contract: path scope and
-//! exclusion, case handling, working-tree inventory, rule sources as
+//! exclusion, case handling, working-tree inventory (and the opt-in
+//! --untracked inventory), rule sources as
 //! candidates, first match per rule and file, non-regular inputs, and
 //! schema/SDK/evaluator field parity, and provenance as matcher-ignored metadata.
 mod common;
@@ -262,6 +263,104 @@ fn working_tree_inventory_is_tracked_regular_files_minus_deletions() {
     let only = policy(&[marker_rule(&["src/unstaged-delete.ts"], None)]);
     let error = run(cli(&["check"], &only, root), 2);
     assert!(error.contains("empty text scope"), "{error}");
+}
+
+#[test]
+fn untracked_flag_adds_non_ignored_untracked_files() {
+    let repo = repo();
+    let root = repo.path();
+    write(root, ".gitignore", "ignored/\n");
+    write(root, "src/app.ts", "currentMarker();\n");
+    write(root, "src/deleted.ts", "currentMarker();\n");
+    git(root, &["add", "-A"]);
+    commit(root);
+    let rule = policy(&[marker_rule(&["**/*.ts"], None)]);
+    let banned = policy(&[json!({
+        "id": "path/no-banned", "kind": "forbidden-path", "paths": ["**/banned.txt"],
+        "remediation": "Remove banned.txt.",
+        "fixtures": [{ "path": "banned.txt", "expect": { "line": 1, "column": 1 } }]
+    })]);
+    let untracked = ["check", "--untracked"];
+
+    // Ignored untracked files and deleted tracked files stay out of the scan.
+    write(root, "ignored/untracked.ts", "legacyMarker();\n");
+    write(root, "ignored/banned.txt", "");
+    fs::remove_file(root.join("src/deleted.ts")).unwrap();
+    assert_eq!(run(cli(&untracked, &rule, root), 0), "");
+    assert_eq!(run(cli(&untracked, &banned, root), 0), "");
+
+    // A non-ignored untracked file is a candidate only with --untracked.
+    write(root, "src/untracked.ts", "legacyMarker();\n");
+    write(root, "banned.txt", "");
+    assert_eq!(run(cli(&["check"], &rule, root), 0), "");
+    assert_eq!(
+        run(cli(&untracked, &rule, root), 1),
+        "src/untracked.ts:1:1: [source/no-marker] Remove the marker.\n"
+    );
+    assert_eq!(
+        run(cli(&untracked, &banned, root), 1),
+        "banned.txt:1:1: [path/no-banned] Remove banned.txt.\n"
+    );
+
+    // A file that is both staged and edited is reported once.
+    git(root, &["add", "src/untracked.ts"]);
+    write(root, "src/also.ts", "legacyMarker();\n");
+    assert_eq!(
+        run(cli(&untracked, &rule, root), 1),
+        concat!(
+            "src/also.ts:1:1: [source/no-marker] Remove the marker.\n",
+            "src/untracked.ts:1:1: [source/no-marker] Remove the marker.\n"
+        )
+    );
+
+    // An untracked text scope can satisfy a rule that has no tracked file.
+    let only = policy(&[marker_rule(&["new/**/*.ts"], None)]);
+    write(root, "new/clean.ts", "currentMarker();\n");
+    assert!(run(cli(&["check"], &only, root), 2).contains("empty text scope"));
+    assert_eq!(run(cli(&untracked, &only, root), 0), "");
+
+    // A nested repository is skipped like a gitlink in the index.
+    write(root, "vendor/nested/lib.ts", "legacyMarker();\n");
+    git(&root.join("vendor/nested"), &["init", "-q"]);
+    assert!(
+        !run(cli(&untracked, &rule, root), 1).contains("vendor/"),
+        "nested repositories are not candidates"
+    );
+}
+
+#[test]
+fn untracked_symlinks_and_fifos_in_scope_cannot_be_judged() {
+    let repo = repo();
+    let root = repo.path();
+    write(root, "src/app.ts", "currentMarker();\n");
+    write(root, "elsewhere/target.ts", "legacyMarker();\n");
+    git(root, &["add", "src/app.ts"]);
+    write(root, ".gitignore", "elsewhere/\n");
+    let rule = policy(&[marker_rule(&["src/**/*.ts"], None)]);
+    let untracked = ["check", "--untracked"];
+
+    // An untracked symlink is listed by Git and is not followed.
+    symlink("../elsewhere/target.ts", root.join("src/link.ts")).unwrap();
+    assert_eq!(run(cli(&["check"], &rule, root), 0), "");
+    let error = run(cli(&untracked, &rule, root), 2);
+    assert!(
+        error.contains("src/link.ts: cannot open \"link.ts\" without following symlinks"),
+        "{error}"
+    );
+    fs::remove_file(root.join("src/link.ts")).unwrap();
+
+    // Git never lists a FIFO (or socket) as untracked, so --untracked cannot see
+    // one and it is outside the inventory, as it is for `git add -A`.
+    let status = Command::new("mkfifo")
+        .arg(root.join("src/pipe.ts"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert_eq!(
+        git(root, &["ls-files", "--others", "--exclude-standard"]),
+        ".gitignore"
+    );
+    assert_eq!(run(cli(&untracked, &rule, root), 0), "");
 }
 
 #[test]

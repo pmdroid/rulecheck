@@ -3,18 +3,18 @@ title: CLI reference
 description: Rulecheck commands, exit codes, and scan scope.
 ---
 
-The installed `rulecheck` command builds policy from `.rulecheck/rules/**/*.rule.ts` in the selected checkout and pipes it to the evaluator. `--root DIR` picks the checkout root, which defaults to the current directory. Run from the checkout root or pass `--root`: a subdirectory exits 2 and the message names the root to pass. `--commit SHA` reads rules and files from a full commit instead.
+The installed `rulecheck` command builds policy from `.rulecheck/rules/**/*.rule.ts` in the selected checkout and pipes it to the evaluator. `--root DIR` picks the checkout root, which defaults to the current directory. Run from the checkout root or pass `--root`: a subdirectory exits 2 and the message names the root to pass. `--commit SHA` reads rules and files from a full commit instead. `--untracked` adds untracked files that Git doesn't ignore to a working-tree check.
 
 | Command | Purpose |
 | --- | --- |
-| `rulecheck check [--root DIR] [--commit SHA] [--format human\|json]` | Scan working-tree files tracked by Git, or inspect exact committed blobs. |
+| `rulecheck check [--root DIR] [--commit SHA \| --untracked] [--format human\|json]` | Scan working-tree files tracked by Git (plus non-ignored untracked files with `--untracked`), or inspect exact committed blobs. |
 | `rulecheck test [--root DIR] [--commit SHA]` | Run rule fixtures. |
 | `rulecheck list [--root DIR] [--commit SHA]` | List rule IDs in sorted order. |
 | `rulecheck validate [--root DIR] [--commit SHA]` | Check policy syntax, rule IDs, globs, and patterns. |
 | `rulecheck schema` | Print the v1 schema. |
 | `rulecheck help` | Print usage to stdout and exit 0. `-h` and `--help` do the same. |
 
-`list`, `test`, and `check` accept `--id-prefix PREFIX`. An unmatched prefix is an error. Use `git add` for newly created files before running a working-tree check. In commit mode a scoped symlink or submodule is an error; neither the working tree nor the index is consulted.
+`list`, `test`, and `check` accept `--id-prefix PREFIX`. An unmatched prefix is an error. Use `git add` for newly created files before running a working-tree check, or pass `--untracked`. In commit mode a scoped symlink or submodule is an error; neither the working tree nor the index is consulted.
 
 | Exit | Meaning |
 | --- | --- |
@@ -85,9 +85,9 @@ The contract:
 - `diagnostics` lists each reason the check could not judge, as `{ ruleId, message }`. `ruleId` is set for an empty text scope and `null` otherwise. Any diagnostic makes the outcome `error`.
 - After an empty text scope, the findings for the other rules are complete and still listed. When a scan stops early, for example on an unreadable file or an input limit, `findings` is empty. Never treat an `error` result as clean.
 - `policy.sha256` is the SHA-256 of the exact policy bytes the evaluator read. It is `null` when the policy could not be read. It differs from the shadow evidence's effective-policy digest, which hashes a canonical form. `policy.version` is `null` when the policy is invalid. `policy.ruleIds` lists the rules selected after `--id-prefix`.
-- `source.mode` is `commit` with the exact `--commit` SHA, or `working-tree` with `commit: null`. A working-tree scan includes unstaged edits, so no commit describes it exactly.
+- `source.mode` is `commit` with the exact `--commit` SHA, or `working-tree` with `commit: null`. A working-tree scan includes unstaged edits, so no commit describes it exactly. `source.untracked` is `true` when `--untracked` was passed and absent otherwise, so results without the flag keep the shape shown above.
 - `tools.evaluator` is the evaluator version. The installed `rulecheck` command sets `tools.builder`. The low-level evaluator reports `null` because it reads policy from stdin.
-- If the builder fails, the installed command still writes an error result. It carries the builder's messages as diagnostics and `null` policy fields. Invalid arguments, including a short `--commit` value or a `--root` that is not the checkout root, produce no document, only a usage message and exit 2. Treat a missing or unparsable document as `error`.
+- If the builder fails, the installed command still writes an error result. It carries the builder's messages as diagnostics and `null` policy fields. Invalid arguments, including a short `--commit` value, `--untracked` with `--commit`, or a `--root` that is not the checkout root, produce no document, only a usage message and exit 2. Treat a missing or unparsable document as `error`.
 
 ## Limits
 
@@ -114,15 +114,24 @@ A file is in a rule's scope when it matches an entry in `paths` and no entry in 
 Without `--commit`, the candidate files are the regular files in the Git index, read from the working tree:
 
 - Changes to tracked files are scanned without staging, including tracked files that match `.gitignore`.
-- Untracked files are not scanned, whether ignored or not. Run `git add` first.
+- Untracked files are not scanned, whether ignored or not. Run `git add` first, or pass `--untracked`.
 - A tracked file deleted from the working tree or the index is skipped. If that leaves a text rule with no files in scope, the check exits 2.
 - Git symlinks and submodules are skipped. A scoped path that is now a directory, FIFO, or other non-regular file, or that sits under a symlinked directory, exits 2.
+
+With `--untracked`, the candidates also include the untracked files that Git doesn't ignore, as listed by `git ls-files --others --exclude-standard`. They are checked the same way as index files:
+
+- Ignored untracked files and tracked files deleted from the working tree are still skipped. A file both in the index and on disk is scanned once.
+- An untracked symlink in scope exits 2; Git lists a symlinked directory as one entry and does not look inside it. Git never lists a FIFO or socket as untracked, so one is not a candidate, just as `git add -A` would not add it. A nested Git repository is skipped like a submodule.
+- An untracked file can fill a text rule's scope, so a check that exits 2 for an empty scope can pass or fail with `--untracked`.
+- `--untracked` with `--commit` is a usage error (exit 2): a commit has no untracked files.
 
 With `--commit SHA`, the candidate files are the commit's tree, and the index and working tree are ignored. A scoped symlink or submodule exits 2.
 
 ## Rule sources
 
 Every entry under `.rulecheck/rules` must be a regular file or a real directory, in both modes. Without `--commit`, a symlink, FIFO, socket, device, or symlinked directory there exits 2 with an error that names the path, even if its name doesn't end in `.rule.ts`. With `--commit SHA`, any entry that is not a regular blob or a tree exits 2 the same way. This keeps a rule from silently dropping out of the policy. Without `--commit`, nested Git repositories and submodules under `.rulecheck/rules` are skipped; in a commit a submodule there exits 2. Regular files that don't end in `.rule.ts` are ignored.
+
+Without `--commit`, the builder reads `.rulecheck/rules` from disk, not from the Git index. An untracked `.rule.ts` file there is loaded as a rule whether or not you pass `--untracked`, even though, without the flag, untracked files are not scan candidates. Commit or delete experimental rule files before relying on a clean working-tree check, or use `--commit` to check exactly what is committed.
 
 Rule sources under `.rulecheck/` are scanned like any other file. A broad scope such as `**/*.ts` can match a rule's own pattern or fixture text, so add `exclude: [".rulecheck/**"]` to that rule.
 

@@ -455,6 +455,37 @@ fn check_rejects_a_commit_that_is_not_a_full_sha() {
 }
 
 #[test]
+fn check_rejects_untracked_with_a_commit() {
+    let sha = "a".repeat(40);
+    for args in [
+        ["check", "--commit", &sha, "--untracked"],
+        ["check", "--untracked", "--commit", &sha],
+    ] {
+        let output = cli(&args, b"", Path::new(ROOT));
+        expect(&output, 2);
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "rulecheck: --untracked applies to working-tree checks only; \
+             a commit has no untracked files, so drop --untracked or --commit\n"
+        );
+    }
+    for args in [
+        &["check", "--untracked", "--untracked"][..],
+        &["test", "--untracked"],
+        &["list", "--untracked"],
+    ] {
+        let output = cli(args, b"", Path::new(ROOT));
+        expect(&output, 2);
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("unexpected argument \"--untracked\"")
+        );
+    }
+    let help = String::from_utf8(cli(&["help"], b"", Path::new(ROOT)).stdout).unwrap();
+    assert!(help.contains("[--commit SHA | --untracked]"), "{help}");
+}
+
+#[test]
 fn builder_reports_rule_shape_errors_at_the_rule_file() {
     let repo = tempfile::tempdir().unwrap();
     let root = repo.path();

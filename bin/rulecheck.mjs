@@ -19,7 +19,7 @@ const timeout = 120_000;
 const HELP = `\
 rulecheck: deterministic repository checks
 
-  rulecheck check [--root DIR] [--commit SHA] [--id-prefix PREFIX] [--format human|json]
+  rulecheck check [--root DIR] [--commit SHA | --untracked] [--id-prefix PREFIX] [--format human|json]
                      Build policy from .rulecheck/rules/**/*.rule.ts and scan the checkout
   rulecheck test [--root DIR] [--commit SHA] [--id-prefix PREFIX]
                      Run the rule fixtures
@@ -32,6 +32,8 @@ rulecheck: deterministic repository checks
 
 --root selects the Git checkout root (default: current directory). --commit takes a
 full 40- or 64-character SHA; resolve HEAD or a short SHA with git rev-parse first.
+By default check scans the files in the Git index; --untracked also scans non-ignored
+untracked files and cannot be combined with --commit.
 Rules are parsed as static data by the builder in ${install}; rule modules are never executed.
 The low-level evaluator that reads policy from stdin is ${evaluator}.
 --format json writes one versioned result document (schema/result-v1.json) to stdout.
@@ -43,6 +45,10 @@ class UsageError extends Error {}
 
 const FULL_SHA = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i;
 const ROOT_HINT = "run from the checkout root or pass --root";
+const UNTRACKED_COMMIT = "--untracked applies to working-tree checks only; "
+  + "a commit has no untracked files, so drop --untracked or --commit";
+// Flags that take no value; every other flag takes exactly one.
+const SWITCHES = ["--untracked"];
 
 function fail(message) {
   console.error(`rulecheck: ${message}`);
@@ -52,14 +58,16 @@ function fail(message) {
 function parse(command, args) {
   const options = new Map();
   const allowed = command === "validate" ? ["--root", "--commit"] : ["--root", "--commit", "--id-prefix"];
-  if (command === "check") allowed.push("--format");
-  for (let index = 0; index < args.length; index += 2) {
-    const [flag, value] = args.slice(index, index + 2);
+  if (command === "check") allowed.push("--format", "--untracked");
+  for (let index = 0; index < args.length; index += 1) {
+    const flag = args[index];
+    const value = SWITCHES.includes(flag) ? true : args[++index];
     if (!allowed.includes(flag) || options.has(flag) || value === undefined || value === "") {
       throw new UsageError(`unexpected argument ${JSON.stringify(flag)}; run rulecheck help`);
     }
     options.set(flag, value);
   }
+  if (options.has("--untracked") && options.has("--commit")) throw new UsageError(UNTRACKED_COMMIT);
   if (!["human", "json", undefined].includes(options.get("--format"))) {
     throw new UsageError("--format requires human or json");
   }
@@ -137,7 +145,7 @@ function errorResult(env, builder, options, messages) {
     outcome: "error",
     policy: { idPrefix: options.get("--id-prefix") ?? null, ruleIds: [], sha256: null, version: null },
     resultVersion: 1,
-    source: { commit, mode: commit ? "commit" : "working-tree" },
+    source: { commit, mode: commit ? "commit" : "working-tree", ...(options.has("--untracked") ? { untracked: true } : {}) },
     tools: { builder, evaluator: version.status === 0 ? version.stdout.trim() : `rulecheck (${evaluator})` },
   };
 }
@@ -199,6 +207,7 @@ function main(argv) {
 
   const evaluate = [command, ...(command === "check" ? source : [])];
   if (options.has("--id-prefix")) evaluate.push("--id-prefix", options.get("--id-prefix"));
+  if (options.has("--untracked")) evaluate.push("--untracked");
   if (json) evaluate.push("--format", "json");
   const result = spawnSync(evaluator, evaluate, {
     cwd: install,

@@ -333,6 +333,48 @@ fn installed_check_writes_a_json_result_even_when_the_build_fails() {
     );
     assert_eq!(exact["findings"], result["findings"]);
 
+    // --untracked reaches the evaluator, is recorded in the source, and is a
+    // usage error with --commit before anything is built.
+    fs::write(root.join("config/new.toml"), "legacy_mode = true\n").unwrap();
+    expect(&install.run(root, &["check"]), 1, FINDING);
+    let added =
+        "config/new.toml:1:1: [config/no-legacy-mode] Remove legacy_mode or set it to false.\n";
+    expect(
+        &install.run(root, &["check", "--untracked"]),
+        1,
+        &format!("{FINDING}{added}"),
+    );
+    let output = install.run(root, &["check", "--format", "json", "--untracked"]);
+    let untracked = json_result(&output, 1);
+    assert_eq!(
+        untracked["source"],
+        serde_json::json!({ "mode": "working-tree", "commit": null, "untracked": true })
+    );
+    assert_eq!(untracked["findings"][1]["path"], "config/new.toml");
+    assert!(result["source"].get("untracked").is_none());
+    for args in [
+        &["check", "--commit", &sha, "--untracked"][..],
+        &["check", "--untracked", "--commit", &sha, "--format", "json"],
+    ] {
+        let usage = expect(&install.run(root, args), 2, "");
+        assert_eq!(
+            usage,
+            "rulecheck: --untracked applies to working-tree checks only; \
+             a commit has no untracked files, so drop --untracked or --commit\n"
+        );
+    }
+    for args in [
+        &["test", "--untracked"][..],
+        &["check", "--untracked", "--untracked"],
+    ] {
+        let usage = expect(&install.run(root, args), 2, "");
+        assert!(
+            usage.contains("unexpected argument \"--untracked\""),
+            "{usage}"
+        );
+    }
+    fs::remove_file(root.join("config/new.toml")).unwrap();
+
     fs::write(
         root.join(".rulecheck/rules/demo.rule.ts"),
         EXAMPLE.replace("value: legacySetting", "value: makePattern()"),
@@ -344,6 +386,9 @@ fn installed_check_writes_a_json_result_even_when_the_build_fails() {
     assert_eq!(failed["findings"], serde_json::json!([]));
     assert_eq!(failed["policy"]["sha256"], serde_json::Value::Null);
     assert_eq!(failed["tools"]["evaluator"], evaluator.as_str());
+    assert!(failed["source"].get("untracked").is_none());
+    let output = install.run(root, &["check", "--untracked", "--format", "json"]);
+    assert_eq!(json_result(&output, 2)["source"]["untracked"], true);
     let messages: Vec<_> = failed["diagnostics"]
         .as_array()
         .unwrap()
