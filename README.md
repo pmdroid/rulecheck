@@ -76,3 +76,16 @@ cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features
 ```
+
+## Documentation
+
+Build or preview the [Astro Starlight docs](docs/) with Node.js 24.17 or later:
+
+```sh
+npm ci --prefix docs --ignore-scripts
+npm run build --prefix docs
+npm run preview --prefix docs
+```
+
+Run the four cookbook recipes after building the CLI: `bash docs/examples/run.sh`.
+Set `RULECHECK_DOCS_SITE` to the intended site origin and `RULECHECK_DOCS_BASE` to its path prefix when building for a subpath. The build output is in `docs/dist/`.
