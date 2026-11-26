@@ -9,6 +9,7 @@ import regex from '../../../examples/rules/regex.rule.ts?raw';
 import path from '../../../examples/rules/path.rule.ts?raw';
 import scope from '../../../examples/rules/scope.rule.ts?raw';
 import exclude from '../../../examples/rules/exclude.rule.ts?raw';
+import ruleSources from '../../../examples/rules/rule-sources.rule.ts?raw';
 import multiScope from '../../../examples/rules/multi-scope.rule.ts?raw';
 import pathGlobs from '../../../examples/rules/path-globs.rule.ts?raw';
 
@@ -47,13 +48,27 @@ The same marker appears in source and generated files, but only `src/` is in sco
 
 ## Excluded paths
 
-Use `exclude` to drop files from a broad scope. A file is checked when it matches `paths` and nothing in `exclude`. Fixtures use the same scope, so add a fixture for each excluded area. Both lists are case-sensitive, which means `src/Generated/` is still in scope here. If a scope such as `**/*.ts` would also cover the rule sources, add `.rulecheck/**` to `exclude`.
+Use `exclude` to drop files from a broad scope. A file is checked when it matches `paths` and nothing in `exclude`. Fixtures use the same scope, so add a fixture for each excluded area. Both lists are case-sensitive, which means `src/Generated/` is still in scope here. If a scope such as `**/*.ts` would also cover the rule sources, add `.rulecheck/**` to `exclude`, as the [next recipe](#rule-sources-in-a-broad-scope) shows.
 
 <Code code={exclude} lang="ts" title="exclude.rule.ts" />
 
+## Rule sources in a broad scope
+
+In v1, rule sources under `.rulecheck/` are scan candidates like any other file, both in a working-tree check and with `--commit`. A rule's own file contains its pattern and fixture text, so a broad scope such as `**/*.ts` reports the rule itself. Add `exclude: [".rulecheck/**"]` to such a rule. Omitting rule sources automatically is deferred to a later contract version.
+
+<Code code={ruleSources} lang="ts" title="rule-sources.rule.ts" />
+
+The runner checks this recipe both ways. With the `exclude` entry removed, the same policy reports the rule file at its first match, the `pattern` value, in both modes:
+
+```text
+.rulecheck/rules/rule-sources.rule.ts:8:39: [source/no-debugger] Remove the debugger statement.
+```
+
+With the `exclude` entry, the same checkout is clean, and a `debugger;` in `scripts/release.ts` is still reported.
+
 ## Multiple paths and exact locations
 
-The entries in `paths` are alternatives. Here, both the core package and API service are checked; the web service is not. Literal matching reports only the first match per rule and file. Columns are one-based Unicode scalar positions, so the Greek letter before the match still counts as one column.
+The entries in `paths` are alternatives. Here, both the core package and API service are checked; the web service is not. Each rule reports only its first match per file, so the second `OLD_NAME` on the same line adds no finding. Columns are one-based Unicode scalar positions, so the Greek letter before the match still counts as one column.
 
 <Code code={multiScope} lang="ts" title="multi-scope.rule.ts" />
 
@@ -65,6 +80,8 @@ Mix an exact repository-relative path with a pattern. This example uses `**` for
 
 ## Reading fixture expectations
 
-Use `expect: null` for a clean or out-of-scope example, or an exact `{ line, column }` for a finding. A text fixture must provide `content`; a forbidden-path fixture must omit it. The cookbook runner checks fixture expectations and then scans real tracked files. It also verifies exit 2 for an unsupported policy version.
+Use `expect: null` for a clean or out-of-scope example, or an exact `{ line, column }` for a finding. A fixture expects at most one location because each rule reports at most one finding per file. A text fixture must provide `content`; a forbidden-path fixture must omit it. The cookbook runner checks fixture expectations and then scans real tracked files. It also verifies exit 2 for an unsupported policy version.
+
+One finding per rule per file, at the first match, is the v1 contract for `check` and its JSON output. Fix that match and run the check again to see the next one. Reporting every match would change finding counts, so it is reserved for a later flag or contract version.
 
 These matchers do not parse an AST or understand whether text is inside a comment or a string. Use a language-aware linter or test for those checks.
