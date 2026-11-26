@@ -3,7 +3,7 @@ title: CLI reference
 description: Rulecheck commands, exit codes, and scan scope.
 ---
 
-The installed `rulecheck` command builds policy from `.rulecheck/rules/**/*.rule.ts` in the selected checkout and pipes it to the evaluator. `--root DIR` picks the checkout root, which defaults to the current directory. `--commit SHA` reads rules and files from a full commit instead.
+The installed `rulecheck` command builds policy from `.rulecheck/rules/**/*.rule.ts` in the selected checkout and pipes it to the evaluator. `--root DIR` picks the checkout root, which defaults to the current directory. Run from the checkout root or pass `--root`: a subdirectory exits 2 and the message names the root to pass. `--commit SHA` reads rules and files from a full commit instead.
 
 | Command | Purpose |
 | --- | --- |
@@ -12,6 +12,7 @@ The installed `rulecheck` command builds policy from `.rulecheck/rules/**/*.rule
 | `rulecheck list [--root DIR] [--commit SHA]` | List rule IDs in sorted order. |
 | `rulecheck validate [--root DIR] [--commit SHA]` | Check policy syntax, rule IDs, globs, and patterns. |
 | `rulecheck schema` | Print the v1 schema. |
+| `rulecheck help` | Print usage to stdout and exit 0. `-h` and `--help` do the same. |
 
 `list`, `test`, and `check` accept `--id-prefix PREFIX`. An unmatched prefix is an error. Use `git add` for newly created files before running a working-tree check. In commit mode a scoped symlink or submodule is an error; neither the working tree nor the index is consulted.
 
@@ -21,9 +22,18 @@ The installed `rulecheck` command builds policy from `.rulecheck/rules/**/*.rule
 | 1 | One or more findings or fixture mismatches. |
 | 2 | Could not judge, such as an invalid rule file, a builder failure, unreadable text, or a text rule matching no files. |
 
-Findings and fixture mismatches go to stdout, one per line. Exit 2 diagnostics go to stderr. `validate` prints nothing on success, and `test` prints a count such as `4 fixtures passed`.
+Findings and fixture mismatches go to stdout, one per line. Exit 2 diagnostics go to stderr. `validate` prints nothing on success, and `test` prints a count such as `4 fixtures passed`. Running `rulecheck` with no command prints the usage to stderr and exits 2, so a script that drops its command never reads as clean.
 
-`--commit` takes a full 40-character SHA; a short SHA or `HEAD` exits 2. Resolve it first:
+The builder checks each rule's property names and value types before the evaluator sees the policy, and reports a mistake at its place in the rule file with the fixture number:
+
+```text
+rulecheck build: .rulecheck/rules/demo.rule.ts:16:26: Unknown property col in fixture 2 expect. Use line and column.
+rulecheck: could not build policy from /path/to/checkout/.rulecheck/rules
+```
+
+The evaluator still checks limits, rule IDs, globs, and regex syntax. Those messages name the rule ID, such as `[config/no-legacy-mode] invalid regex: …`.
+
+`--commit` takes a full 40- or 64-character SHA. A short SHA or `HEAD` is an argument error: it exits 2 with one usage line and, with `--format json`, no result document. Resolve it first:
 
 ```bash
 rulecheck check --commit "$(git rev-parse HEAD)"
@@ -77,7 +87,7 @@ The contract:
 - `policy.sha256` is the SHA-256 of the exact policy bytes the evaluator read. It is `null` when the policy could not be read. It differs from the shadow evidence's effective-policy digest, which hashes a canonical form. `policy.version` is `null` when the policy is invalid. `policy.ruleIds` lists the rules selected after `--id-prefix`.
 - `source.mode` is `commit` with the exact `--commit` SHA, or `working-tree` with `commit: null`. A working-tree scan includes unstaged edits, so no commit describes it exactly.
 - `tools.evaluator` is the evaluator version. The installed `rulecheck` command sets `tools.builder`. The low-level evaluator reports `null` because it reads policy from stdin.
-- If the builder fails, the installed command still writes an error result. It carries the builder's messages as diagnostics and `null` policy fields. Invalid arguments produce no document, only a usage message and exit 2. Treat a missing or unparsable document as `error`.
+- If the builder fails, the installed command still writes an error result. It carries the builder's messages as diagnostics and `null` policy fields. Invalid arguments, including a short `--commit` value or a `--root` that is not the checkout root, produce no document, only a usage message and exit 2. Treat a missing or unparsable document as `error`.
 
 ## Limits
 
