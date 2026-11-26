@@ -9,12 +9,12 @@ description: Define, test, and retire a rule safely.
 4. Type-check against the SDK, validate the built policy, and run the fixtures. Inspect findings in a representative checkout before making a rule authoritative.
 
 ```bash
-set -o pipefail
-npm run typecheck
-npm run --silent build | target/debug/rulecheck validate
-npm run --silent build | target/debug/rulecheck test
+rulecheck validate
+rulecheck test
 ```
 
-Rule files import `defineRule` from `@rulecheck/sdk` and export one `defineRule({...})` declaration. The builder accepts literals, arrays, objects with explicit keys, and references to earlier literal constants. It does not execute TypeScript modules. The versioned JSON travels on stdout/stdin; there is no generated policy file to commit.
+In the Rulecheck checkout, `npm run typecheck` also checks its own rules and cookbook examples against the SDK types.
+
+Rule files import `defineRule` from `@rulecheck/sdk` and export one `defineRule({...})` declaration. The builder accepts literals, arrays, objects with explicit keys, and references to earlier literal constants. It does not execute TypeScript modules. `rulecheck` pipes the versioned JSON from the builder to the evaluator; there is no generated policy file to commit.
 
 To retire a rule, remove the rule source in a reviewed change and document what replaced it or why it no longer applies. The shadow workflow still checks the candidate against base policy, even when proposed policy removes a rule. Retire an obsolete rule separately rather than weakening it to get another change through.
