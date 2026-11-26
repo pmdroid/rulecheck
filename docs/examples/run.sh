@@ -24,12 +24,12 @@ check_result() {
 }
 
 if [[ "$#" == 0 ]]; then
-  set -- literal regex path scope exclude multi-scope path-globs
+  set -- literal regex path scope exclude rule-sources multi-scope path-globs
 fi
 
 for recipe in "$@"; do
   case "$recipe" in
-    literal|regex|path|scope|exclude|multi-scope|path-globs) ;;
+    literal|regex|path|scope|exclude|rule-sources|multi-scope|path-globs) ;;
     *) printf 'Unknown cookbook recipe: %s\n' "$recipe" >&2; exit 2 ;;
   esac
   working="$demo/$recipe"
@@ -65,6 +65,12 @@ for recipe in "$@"; do
       printf 'console.log(user);\n' > "$working/src/app.test.ts"
       finding='src/app.ts:2:3: [source/no-console-log] Use the project logger instead of console.log.'
       ;;
+    rule-sources)
+      mkdir -p "$working/scripts"
+      printf 'export const ready = true;\n' > "$working/src/app.ts"
+      printf 'export const version = "1.0.0";\n' > "$working/scripts/release.ts"
+      finding='scripts/release.ts:2:3: [source/no-debugger] Remove the debugger statement.'
+      ;;
     multi-scope)
       mkdir -p "$working/packages/core/src" "$working/services/"{api,web}
       printf '// NEW_NAME\n' > "$working/packages/core/src/index.ts"
@@ -81,6 +87,23 @@ for recipe in "$@"; do
   esac
 
   git -C "$working" add -f -- .
+  if [[ "$recipe" == rule-sources ]]; then
+    # The same policy without exclude reports the rule's own source, at its
+    # first match only, in both working-tree and commit mode.
+    unexcluded="$(node -e '
+      const policy = JSON.parse(require("fs").readFileSync(0, "utf8"));
+      for (const rule of policy.rules) delete rule.exclude;
+      process.stdout.write(JSON.stringify(policy));
+    ' <<<"$policy")"
+    git -C "$working" -c user.name=Rulecheck -c user.email=rulecheck@example.invalid \
+      -c commit.gpgsign=false commit -qm 'Add rule'
+    head="$(git -C "$working" rev-parse HEAD)"
+    own='.rulecheck/rules/rule-sources.rule.ts:8:39: [source/no-debugger] Remove the debugger statement.'
+    check_result 1 "$own" "$cli" check --root "$working" <<<"$unexcluded"
+    check_result 1 "$own" "$cli" check --root "$working" --commit "$head" <<<"$unexcluded"
+    check_result 0 '' "$cli" check --root "$working" --commit "$head" <<<"$policy"
+    printf 'rule-sources: rule source reported without exclude, clean with it, in both modes\n'
+  fi
   check_result 0 '' "$cli" check --root "$working" <<<"$policy"
 
   case "$recipe" in
@@ -92,6 +115,7 @@ for recipe in "$@"; do
       ;;
     scope) printf 'legacyMarker();\n' > "$working/src/app.ts" ;;
     exclude) printf 'export function run(user) {\n  console.log(user);\n}\n' > "$working/src/app.ts" ;;
+    rule-sources) printf 'export function release() {\n  debugger;\n}\n' > "$working/scripts/release.ts" ;;
     multi-scope)
       printf '// π OLD_NAME OLD_NAME\n' > "$working/packages/core/src/index.ts"
       printf '// OLD_NAME\n' > "$working/services/api/index.ts"

@@ -39,7 +39,7 @@ The evaluator still checks limits, rule IDs, globs, and regex syntax. Those mess
 rulecheck check --commit "$(git rev-parse HEAD)"
 ```
 
-Findings report the first match per rule and file. Columns count Unicode scalar values, not bytes; forbidden paths use `1:1`. Narrow broad globs if the scanner reports an input limit.
+Each rule reports at most one finding per file, at its first match. This is the v1 contract: further matches in the same file are not reported until the first is fixed, and reporting every match is reserved for a later flag or contract version because it would change finding counts. Columns count Unicode scalar values, not bytes; forbidden paths use `1:1`. Narrow broad globs if the scanner reports an input limit.
 
 ## Machine-readable results
 
@@ -133,7 +133,7 @@ Every entry under `.rulecheck/rules` must be a regular file or a real directory,
 
 Without `--commit`, the builder reads `.rulecheck/rules` from disk, not from the Git index. An untracked `.rule.ts` file there is loaded as a rule whether or not you pass `--untracked`, even though, without the flag, untracked files are not scan candidates. Commit or delete experimental rule files before relying on a clean working-tree check, or use `--commit` to check exactly what is committed.
 
-Rule sources under `.rulecheck/` are scanned like any other file. A broad scope such as `**/*.ts` can match a rule's own pattern or fixture text, so add `exclude: [".rulecheck/**"]` to that rule.
+Rule sources under `.rulecheck/` are scan candidates like any other file, in both working-tree and `--commit` mode. This is part of the v1 contract; omitting them automatically is deferred to a later contract version. A broad scope such as `**/*.ts` can match a rule's own pattern or fixture text, so add `exclude: [".rulecheck/**"]` to that rule. The [rule sources recipe](../cookbook/#rule-sources-in-a-broad-scope) shows the finding without the exclude and the clean check with it.
 
 ## Low-level pipeline
 
