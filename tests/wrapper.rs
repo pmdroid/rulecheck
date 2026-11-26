@@ -199,11 +199,6 @@ fn installed_check_loads_rules_from_another_repository_without_running_its_code(
         error.contains("no rule IDs match prefix \"unknown/\""),
         "{error}"
     );
-    let error = expect(&install.run(&root.join("config"), &["check"]), 2, "");
-    assert!(
-        error.contains("use the root directory of a Git checkout"),
-        "{error}"
-    );
 
     fs::write(&candidate, "legacy_mode = false\n").unwrap();
     assert_eq!(snapshot(root), before);
@@ -370,5 +365,83 @@ fn installed_check_writes_a_json_result_even_when_the_build_fails() {
     assert!(usage.contains("--format requires human or json"), "{usage}");
     let usage = expect(&install.run(root, &["test", "--format", "json"]), 2, "");
     assert!(usage.contains("unexpected argument"), "{usage}");
+    assert_eq!(fs::read_dir(markers.path()).unwrap().count(), 0);
+}
+
+/// Each error names what to fix: the rule file and fixture, the commit argument, or
+/// the checkout root. None of them is blamed on the policy the user never sees.
+#[test]
+fn installed_cli_points_errors_at_the_real_cause() {
+    let install = Install::new();
+    let markers = tempfile::tempdir().unwrap();
+    let repo = hostile_repo(markers.path());
+    let root = repo.path();
+    let output = install.run(root, &["help"]);
+    let text = String::from_utf8(output.stdout.clone()).unwrap();
+    assert_eq!(expect(&output, 0, &text), "");
+    assert!(text.starts_with("rulecheck: deterministic repository checks\n"));
+    assert!(
+        text.contains("rulecheck help     Print this help"),
+        "{text}"
+    );
+    assert_eq!(install.run(root, &["--help"]).stdout, text.as_bytes());
+
+    let usage = expect(&install.run(root, &[]), 2, "");
+    assert!(usage.starts_with(&text), "{usage}");
+    assert!(
+        usage.ends_with("\nrulecheck: missing command; run rulecheck help\n"),
+        "{usage}"
+    );
+
+    for (commit, resolve) in [("HEAD", "HEAD"), ("a0504e7", "a0504e7"), ("x y", "HEAD")] {
+        let expected = format!(
+            "rulecheck: --commit requires a full 40- or 64-character Git commit SHA, \
+             not \"{commit}\"; resolve it first, e.g. --commit \"$(git rev-parse {resolve})\"\n"
+        );
+        for format in ["human", "json"] {
+            let args = ["check", "--commit", commit, "--format", format];
+            assert_eq!(expect(&install.run(root, &args), 2, ""), expected);
+        }
+        assert_eq!(
+            expect(&install.run(root, &["validate", "--commit", commit]), 2, ""),
+            expected
+        );
+    }
+
+    let subdir = root.join("config");
+    let top = String::from_utf8(
+        Command::new("git")
+            .current_dir(root)
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let expected = format!(
+        "rulecheck: {} is a subdirectory of a Git checkout, not its root; \
+         run from the checkout root or pass --root (--root {})\n",
+        fs::canonicalize(&subdir).unwrap().display(),
+        top.trim()
+    );
+    for args in [&["check"][..], &["check", "--format", "json"], &["test"]] {
+        assert_eq!(expect(&install.run(&subdir, args), 2, ""), expected);
+    }
+
+    let rule = root.join(".rulecheck/rules/demo.rule.ts");
+    fs::write(
+        &rule,
+        EXAMPLE.replace("line: 2, column: 1", "line: 2, col: 1"),
+    )
+    .unwrap();
+    let error = expect(&install.run(root, &["validate"]), 2, "");
+    assert!(
+        error.starts_with(
+            "rulecheck build: .rulecheck/rules/demo.rule.ts:16:26: \
+             Unknown property col in fixture 2 expect. Use line and column.\n"
+        ),
+        "{error}"
+    );
+    assert!(!error.contains("invalid policy JSON"), "{error}");
     assert_eq!(fs::read_dir(markers.path()).unwrap().count(), 0);
 }

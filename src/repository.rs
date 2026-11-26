@@ -29,6 +29,8 @@ pub struct Report<'a> {
     pub empty_scopes: Vec<&'a str>,
 }
 
+pub const ROOT_HINT: &str = "run from the checkout root or pass --root";
+
 pub fn check<'a>(root: &Path, rules: &[&'a CompiledRule]) -> Result<Report<'a>> {
     let directory = open(root, directory_flags(), Mode::empty())
         .map_err(|err| format!("cannot open checkout {}: {err}", root.display()))?;
@@ -36,7 +38,10 @@ pub fn check<'a>(root: &Path, rules: &[&'a CompiledRule]) -> Result<Report<'a>> 
         .iter()
         .all(u8::is_ascii_whitespace)
     {
-        return Err("select the root directory of a Git checkout with --root".into());
+        return Err(format!(
+            "{} is a subdirectory of a Git checkout, not its root; {ROOT_HINT}",
+            root.display()
+        ));
     }
     let index = git_output(root, &["ls-files", "--stage", "-z"], MAX_ENTRIES)?;
     let paths = tracked_regular_paths(&index)?;
