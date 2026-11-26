@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { constants, closeSync, fstatSync, lstatSync, opendirSync, openSync, readSync } from "node:fs";
+import { constants, closeSync, fstatSync, lstatSync, opendirSync, openSync, readFileSync, readSync } from "node:fs";
 import { join, resolve } from "node:path";
 import ts from "typescript";
 
@@ -32,9 +32,9 @@ function statIfPresent(path) {
   return lstatSync(path, { throwIfNoEntry: false });
 }
 
-function git(root, args) {
-  const result = spawnSync("git", ["-C", root, ...args], {
-    maxBuffer: 8 * 1024 * 1024,
+function git(root, args, maxBuffer = 8 * 1024 * 1024) {
+  const result = spawnSync("git", ["--no-replace-objects", "-C", root, ...args], {
+    maxBuffer,
     timeout: 15_000,
   });
   if (result.error || result.status !== 0) {
@@ -84,6 +84,42 @@ function discover(root) {
   walk(rulesDir, 0);
   if (rules.length === 0) throw new Error(`${rulesDir}: add a .rule.ts file`);
   return rules.sort();
+}
+
+function committedRules(root, sha) {
+  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(sha)
+      || git(root, ["cat-file", "-t", sha], 32).toString() !== "commit\n") {
+    throw new Error("--commit requires a full Git commit SHA");
+  }
+  const tree = utf8.decode(git(root, ["ls-tree", "--full-tree", "-r", "-t", "-z", sha, "--", ".rulecheck"]));
+  const rules = new Map();
+  const paths = new Set();
+  for (const entry of tree.split("\0").slice(0, -1)) {
+    const tab = entry.indexOf("\t");
+    const path = entry.slice(tab + 1);
+    if (path !== ".rulecheck" && path !== rulesDir && !path.startsWith(`${rulesDir}/`)) continue;
+    const [mode, type, oid] = entry.slice(0, tab).split(" ");
+    const segments = path.split("/");
+    if (paths.has(path) || paths.size >= maxEntries || segments.length > 35
+        || Buffer.byteLength(path) > 4096 || /[\p{Cc}\\]/u.test(path)
+        || segments.some((part) => ["", ".", "..", ".git"].includes(part))) {
+      throw new Error(`${JSON.stringify(path)}: unsupported or excessive Git policy entries`);
+    }
+    paths.add(path);
+    const directory = mode === "040000" && type === "tree";
+    if (path === ".rulecheck" || path === rulesDir) {
+      if (!directory) throw new Error(`${path}: expected a Git tree`);
+    } else if (!directory) {
+      if (!["100644", "100755"].includes(mode) || type !== "blob") {
+        throw new Error(`${path}: expected a regular Git blob`);
+      }
+      if (path.endsWith(".rule.ts")) rules.set(path, oid);
+    }
+  }
+  if (rules.size === 0 || rules.size > maxRules) {
+    throw new Error(`${rulesDir}: expected 1 to ${maxRules} regular .rule.ts files`);
+  }
+  return rules;
 }
 
 function parse(path, source) {
@@ -167,10 +203,10 @@ function parse(path, source) {
   reject(file.end, "Missing rule", "Add export default defineRule({...}) at the end of the file.");
 }
 
-function encodeRule(root, path) {
+function encodeRule(path, read) {
   let rule;
   try {
-    rule = parse(path, readRule(join(root, path)));
+    rule = parse(path, read(path));
   } catch (error) {
     if (error.message.startsWith(`${path}:`)) throw error;
     throw new Error(`${path}:1:1: ${error.message}. Use a regular UTF-8 file with a small literal rule.`);
@@ -189,17 +225,37 @@ function encodeRule(root, path) {
 }
 
 function build(args) {
-  if (args.length !== 0 && !(args.length === 2 && args[0] === "--root" && args[1])) {
-    throw new Error("Usage: npm run --silent build -- [--root DIR]");
+  if (args.length === 1 && args[0] === "--version") {
+    const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+    console.log(`rulecheck-builder ${version} (TypeScript ${ts.version})`);
+    return;
   }
-
-  const root = resolve(args[1] ?? ".");
+  const options = new Map();
+  for (let index = 0; index < args.length; index += 2) {
+    const [flag, value] = args.slice(index, index + 2);
+    if (!["--root", "--commit"].includes(flag) || !value || options.has(flag)) {
+      throw new Error("Usage: npm run --silent build -- [--root DIR] [--commit SHA]");
+    }
+    options.set(flag, value);
+  }
+  const root = resolve(options.get("--root") ?? ".");
+  const sha = options.get("--commit");
+  const committed = sha && committedRules(root, sha);
+  const paths = committed ? [...committed.keys()].sort() : discover(root);
+  const read = (path) => {
+    if (!committed) return readRule(join(root, path));
+    const oid = committed.get(path);
+    if (git(root, ["cat-file", "-t", oid], 32).toString() !== "blob\n") {
+      throw new Error("expected a Git blob object");
+    }
+    return utf8.decode(git(root, ["cat-file", "blob", oid], maxSource));
+  };
   const header = '{"version":1,"rules":[';
   const footer = "]}\n";
   let size = Buffer.byteLength(header + footer);
   const rules = [];
-  for (const path of discover(root)) {
-    const json = encodeRule(root, path);
+  for (const path of paths) {
+    const json = encodeRule(path, read);
     size += Buffer.byteLength(json) + Number(rules.length > 0);
     if (size > maxPolicy) throw new Error(`${path}:1:1: Policy exceeds 1 MiB. Reduce rule and fixture sizes.`);
     rules.push(json);
