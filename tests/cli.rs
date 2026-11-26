@@ -30,6 +30,36 @@ fn build(root: &Path) -> Output {
         .expect("run build; install Node.js and run npm ci")
 }
 
+/// Runs the shipped `bin/rulecheck.mjs` wrapper from a throwaway installation laid
+/// out like a Rulecheck checkout, so it uses this build's evaluator.
+fn installed_check(root: &Path) -> Output {
+    let install = tempfile::tempdir().unwrap();
+    let dir = install.path();
+    for path in ["bin", "tools", "target/release"] {
+        fs::create_dir_all(dir.join(path)).unwrap();
+    }
+    for path in ["bin/rulecheck.mjs", "tools/build.mjs", "package.json"] {
+        fs::copy(Path::new(ROOT).join(path), dir.join(path)).unwrap();
+    }
+    symlink(
+        Path::new(ROOT).join("node_modules"),
+        dir.join("node_modules"),
+    )
+    .unwrap();
+    fs::copy(
+        env!("CARGO_BIN_EXE_rulecheck"),
+        dir.join("target/release/rulecheck"),
+    )
+    .unwrap();
+    Command::new("node")
+        .arg(dir.join("bin/rulecheck.mjs"))
+        .args(["check", "--root"])
+        .arg(root)
+        .env_remove("RULECHECK_WRAPPER_ACTIVE")
+        .output()
+        .expect("run the rulecheck wrapper")
+}
+
 fn git(root: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .current_dir(root)
@@ -545,7 +575,7 @@ fn builder_sorts_sources_and_rejects_nonliteral_syntax() {
     let last = rules.join("z.rule.ts");
     fs::write(&last, EXAMPLE.replace("config/no-legacy-mode", "a/rule")).unwrap();
     fs::write(rules.join("nested/a.rule.ts"), EXAMPLE).unwrap();
-    symlink(&last, rules.join("ignored.rule.ts")).unwrap();
+    fs::write(rules.join("README.md"), "Not a rule.\n").unwrap();
     let output = build(root);
     expect(&output, 0);
     let policy: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -579,6 +609,54 @@ fn builder_sorts_sources_and_rejects_nonliteral_syntax() {
         assert!(error.contains(".rulecheck/rules/z.rule.ts:"), "{error}");
         assert!(error.contains(message), "{error}");
     }
+}
+
+#[test]
+fn working_tree_builder_rejects_non_regular_rule_entries() {
+    let repo = tempfile::tempdir().unwrap();
+    let root = repo.path();
+    git(root, &["init", "-q"]);
+    let rules = root.join(".rulecheck/rules");
+    fs::create_dir_all(&rules).unwrap();
+    fs::write(rules.join("a.rule.ts"), EXAMPLE).unwrap();
+    fs::create_dir(root.join("config")).unwrap();
+    fs::write(root.join("config/app.toml"), "legacy_mode = false\n").unwrap();
+    fs::create_dir(root.join("outside")).unwrap();
+    fs::write(root.join("outside/b.rule.ts"), EXAMPLE).unwrap();
+    git(root, &["add", "-A"]);
+    expect(&build(root), 0);
+    expect(&installed_check(root), 0);
+
+    // A symlink target, or None for a FIFO.
+    let cases = [
+        ("linked.rule.ts", "symlink", Some("a.rule.ts")),
+        ("fifo.rule.ts", "FIFO", None),
+        ("notes.md", "symlink", Some("../../outside/b.rule.ts")),
+        ("linked-dir", "symlink", Some("../../outside")),
+    ];
+    for (name, kind, target) in cases {
+        let path = rules.join(name);
+        match target {
+            Some(target) => symlink(target, &path).unwrap(),
+            None => assert!(
+                Command::new("mkfifo")
+                    .arg(&path)
+                    .status()
+                    .unwrap()
+                    .success()
+            ),
+        }
+        let expected =
+            format!(".rulecheck/rules/{name}: expected a regular file or directory, not a {kind}");
+        for output in [build(root), installed_check(root)] {
+            expect(&output, 2);
+            assert!(output.stdout.is_empty(), "{output:?}");
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(error.contains(&expected), "{error}");
+        }
+        fs::remove_file(&path).unwrap();
+    }
+    expect(&build(root), 0);
 }
 
 #[test]
