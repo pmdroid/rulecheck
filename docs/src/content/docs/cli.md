@@ -23,6 +23,21 @@ The installed `rulecheck` command builds policy from `.rulecheck/rules/**/*.rule
 
 Findings report the first match per rule and file. Columns count Unicode scalar values, not bytes; forbidden paths use `1:1`. Narrow broad globs if the scanner reports an input limit.
 
+## What gets scanned
+
+A file is in a rule's scope when it matches an entry in `paths` and no entry in the optional `exclude` list. Fixtures use the same scope. Globs and text patterns are case-sensitive on every platform, so `src/**` does not match `SRC/app.ts`. Use a regex with `(?i)` for case-insensitive text.
+
+Without `--commit`, the candidate files are the regular files in the Git index, read from the working tree:
+
+- Changes to tracked files are scanned without staging, including tracked files that match `.gitignore`.
+- Untracked files are not scanned, whether ignored or not. Run `git add` first.
+- A tracked file deleted from the working tree or the index is skipped. If that leaves a text rule with no files in scope, the check exits 2.
+- Git symlinks and submodules are skipped. A scoped path that is now a directory, FIFO, or other non-regular file, or that sits under a symlinked directory, exits 2.
+
+With `--commit SHA`, the candidate files are the commit's tree, and the index and working tree are ignored. A scoped symlink or submodule exits 2.
+
+Rule sources under `.rulecheck/` are scanned like any other file. A broad scope such as `**/*.ts` can match a rule's own pattern or fixture text, so add `exclude: [".rulecheck/**"]` to that rule.
+
 ## Low-level pipeline
 
 For tooling, the two stages also run separately. `node tools/build.mjs [--root DIR] [--commit SHA]` (or `npm run --silent build -- ...`) in the Rulecheck checkout writes the policy JSON to stdout. The evaluator binary `target/release/rulecheck` (or `target/debug/rulecheck`) reads it from stdin with the same commands and flags:
