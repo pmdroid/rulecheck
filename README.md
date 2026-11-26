@@ -1,6 +1,6 @@
 # Rulecheck
 
-Rulecheck is a planned Rust CLI for deterministic repository checks authored in TypeScript. The repository currently contains a dependency-free starter, not a working policy evaluator. See [the implementation plan](PLAN.md).
+Rulecheck is a planned Rust CLI for deterministic repository checks authored in TypeScript. The repository currently contains a dependency-free starter, not a working policy evaluator.
 
 ## Development
 
