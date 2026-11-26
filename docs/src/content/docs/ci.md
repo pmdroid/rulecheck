@@ -9,4 +9,6 @@ The `rulecheck-evidence` artifact records the base and candidate SHAs, tool vers
 
 Policy changes require exact-head owner approval for the shadow review phase. Rerun after approval to refresh the receipt. A new head needs a new receipt.
 
+The `Rust CI` workflow's `reproduce` job builds the tools from a fresh checkout with the same pinned Node.js and Rust versions. It then builds and checks the commit twice with `tools/reproduce.mjs`, and its `rulecheck-reproduction` artifact records whether policy bytes and results matched, with wall time per step. It does not replace the shadow evidence.
+
 **Availability:** This workflow is advisory. It does not enable required Rulecheck checks, deploy the docs, or replace Paws Closeout. The Paws receipt comparison is a separate pilot, not an available integration.
