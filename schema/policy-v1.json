@@ -44,6 +44,18 @@
             "value": { "type": "string", "minLength": 1, "maxLength": 4096 }
           }
         },
+        "provenance": {
+          "type": "object",
+          "required": ["finding"],
+          "additionalProperties": false,
+          "properties": {
+            "finding": {
+              "type": "string",
+              "maxLength": 2048,
+              "pattern": "^https://[^\\p{White_Space}\\p{Cc}]+$"
+            }
+          }
+        },
         "fixtures": {
           "type": "array",
           "minItems": 1,

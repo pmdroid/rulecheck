@@ -153,6 +153,9 @@ function committedRules(root, sha) {
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const isStrings = (value) => Array.isArray(value) && value.every((item) => typeof item === "string");
 const isCount = (value) => Number.isInteger(value) && value >= 1;
+// Mirrors the provenance pattern and maxLength in schema/policy-v1.json and src/policy.rs.
+const isFindingUrl = (value) => typeof value === "string" && [...value].length <= 2048
+  && /^https:\/\/[^\p{White_Space}\p{Cc}]+$/u.test(value);
 const list = (names) => names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 
 // Checks the property names and value types of schema/policy-v1.json, so a typo is
@@ -175,7 +178,7 @@ function checkShape(rule, fail) {
   }
 
   if (!isObject(rule)) fail(undefined, undefined, "The rule must be an object", "Pass an object literal to defineRule.");
-  fields(rule, "the rule", ["id", "kind", "paths", "exclude", "remediation", "pattern", "fixtures"],
+  fields(rule, "the rule", ["id", "kind", "paths", "exclude", "remediation", "pattern", "provenance", "fixtures"],
     ["id", "kind", "paths", "remediation", "fixtures"]);
   expect(rule, "id", "rule", (value) => typeof value === "string", "a string");
   expect(rule, "kind", "rule", (value) => ["text", "forbidden-path"].includes(value), '"text" or "forbidden-path"');
@@ -183,6 +186,11 @@ function checkShape(rule, fail) {
   expect(rule, "exclude", "rule", isStrings, "an array of glob strings");
   expect(rule, "remediation", "rule", (value) => typeof value === "string", "a string");
   expect(rule, "fixtures", "rule", (value) => Array.isArray(value), "an array of fixtures");
+  if (Object.hasOwn(rule, "provenance")) {
+    expect(rule, "provenance", "rule", isObject, "an object { finding }");
+    fields(rule.provenance, "the provenance", ["finding"], ["finding"]);
+    expect(rule.provenance, "finding", "provenance", isFindingUrl, "an https:// URL of at most 2048 characters");
+  }
   const text = rule.kind === "text";
   if (text && !Object.hasOwn(rule, "pattern")) {
     fail(rule, undefined, "Text rules require a pattern", 'Add pattern: { kind: "literal", value: "..." }.');

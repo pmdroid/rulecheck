@@ -7,6 +7,7 @@ use std::io::Read;
 pub const MAX_FILE: usize = 1024 * 1024;
 const MAX_POLICY: usize = 1024 * 1024;
 const MAX_RULES: usize = 128;
+const MAX_PROVENANCE_URL: usize = 2048;
 pub type Result<T> = std::result::Result<T, String>;
 
 #[derive(Deserialize)]
@@ -27,7 +28,17 @@ struct Rule {
     remediation: String,
     #[serde(default, deserialize_with = "present")]
     pattern: Option<Pattern>,
+    #[serde(default, deserialize_with = "present")]
+    provenance: Option<Provenance>,
     fixtures: Vec<Fixture>,
+}
+
+/// Where a rule came from. It is validated and then dropped: matchers, fixtures
+/// and finding output ignore it.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Provenance {
+    finding: String,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -161,6 +172,14 @@ impl Rule {
             return Err("provide a single-line remediation up to 512 bytes".into());
         }
 
+        if let Some(provenance) = &self.provenance
+            && !valid_provenance_url(&provenance.finding)
+        {
+            return Err(format!(
+                "provenance.finding must be an https:// URL of at most {MAX_PROVENANCE_URL} characters, without spaces"
+            ));
+        }
+
         if !(1..=16).contains(&self.paths.len()) {
             return Err("provide 1 to 16 path globs".into());
         }
@@ -209,6 +228,14 @@ impl Rule {
             fixtures: self.fixtures,
         })
     }
+}
+
+/// Mirrors the provenance `pattern` and `maxLength` in schema/policy-v1.json: an
+/// https:// URL with no whitespace or control characters, counted in Unicode scalars.
+fn valid_provenance_url(url: &str) -> bool {
+    url.strip_prefix("https://").is_some_and(|rest| {
+        !rest.is_empty() && !rest.chars().any(|c| c.is_whitespace() || c.is_control())
+    }) && url.chars().count() <= MAX_PROVENANCE_URL
 }
 
 fn globs(field: &str, patterns: &[String]) -> Result<GlobSet> {
