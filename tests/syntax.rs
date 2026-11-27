@@ -1,7 +1,9 @@
 //! Pins the `syntax` rule kind: the TypeScript/TSX comment selector from the
 //! cookbook, a second rule that reuses it with no evaluator change, a shadow
 //! comparison against the existing regex text checker, files that cannot be
-//! judged, and the exact parser and grammar versions.
+//! judged, and the exact parser and grammar versions. The same selector shape
+//! is then proven on Go, the second language, without an evaluator change per
+//! rule.
 mod common;
 
 use serde_json::{Value, json};
@@ -13,6 +15,7 @@ use std::process::{Command, Output, Stdio};
 const ROOT: &str = env!("CARGO_MANIFEST_DIR");
 const COMMENTS: &str = include_str!("../docs/examples/rules/syntax.rule.ts");
 const REUSE: &str = include_str!("../docs/examples/rules/syntax-reuse.rule.ts");
+const GO_COMMENTS: &str = include_str!("../docs/examples/rules/syntax-go.rule.ts");
 
 fn cli(args: &[&str], policy: &[u8], root: &Path) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_rulecheck"))
@@ -452,6 +455,7 @@ fn parser_and_grammar_versions_are_pinned() {
     for (name, version) in [
         ("tree-sitter", "0.27.2"),
         ("tree-sitter-typescript", "0.23.2"),
+        ("tree-sitter-go", "0.25.0"),
     ] {
         assert!(
             manifest.contains(&format!("\n{name} = \"={version}\"\n")),
@@ -461,5 +465,169 @@ fn parser_and_grammar_versions_are_pinned() {
             lock.contains(&format!("name = \"{name}\"\nversion = \"{version}\"\n")),
             "Cargo.lock must resolve {name} {version}"
         );
+    }
+}
+
+/// The Go recipe uses the same selector fields as the TypeScript one. Only
+/// the language, the grammar's own kind names and the directive filters
+/// differ.
+#[test]
+fn go_recipe_uses_the_same_selector_shape() {
+    let (repo, policy) = repo_with(&[
+        ("syntax.rule.ts", COMMENTS),
+        ("syntax-go.rule.ts", GO_COMMENTS),
+    ]);
+    assert_eq!(
+        run(cli(&["test"], &policy, repo.path()), 0),
+        "28 fixtures passed\n"
+    );
+    let schema: Value = serde_json::from_str(include_str!("../schema/policy-v1.json")).unwrap();
+    let value: Value = serde_json::from_slice(&policy).unwrap();
+    assert_eq!(common::violations(&schema, &value), Vec::<String>::new());
+
+    let rules = value["rules"].as_array().unwrap();
+    let (go, ts) = (&rules[0]["selector"], &rules[1]["selector"]);
+    let keys = |value: &Value| {
+        value
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(keys(go), keys(ts));
+    assert_eq!(keys(&go["inside"]), keys(&ts["inside"]));
+    assert_eq!(
+        (&go["language"], &ts["language"]),
+        (&json!("go"), &json!("typescript"))
+    );
+    assert_eq!(
+        (&go["node"], &go["inside"]["field"]),
+        (&ts["node"], &ts["inside"]["field"])
+    );
+}
+
+/// Go files with comments in every position the selector distinguishes,
+/// checked both from the working tree and from the commit.
+#[test]
+fn go_selector_reports_the_first_real_function_body_comment_per_file() {
+    let (repo, policy) = repo_with(&[("syntax-go.rule.ts", GO_COMMENTS)]);
+    let root = repo.path();
+    // Outside every body: build constraint, package and doc comments, a
+    // compiler directive, parameter and result comments, struct fields.
+    write(
+        root,
+        "src/outside.go",
+        "//go:build linux\n\n// Package a.\npackage a\n\n// F is documented.\n//\n//go:noinline\nfunc F(a int /* p */) /* r */ int {\n\treturn a\n}\n\ntype T struct {\n\tA int // field\n}\n\n/* trailer */\n",
+    );
+    // Strings, raw strings over several lines and runes hold no comments.
+    write(
+        root,
+        "src/strings.go",
+        "package a\n\nfunc S() string {\n\ta := \"// no\"\n\tb := `\n// no\n/* no */`\n\treturn a + b + string('/')\n}\n",
+    );
+    // Directives and TODO are dropped, so the trailing comment after them is
+    // the first selected node.
+    write(
+        root,
+        "src/directives.go",
+        "package a\n\nimport \"os\"\n\nfunc D() {\n\t//nolint:errcheck\n\tos.Remove(\"x\")\n\t// TODO: later\n\tos.Remove(\"y\") // why\n}\n",
+    );
+    // A method body nested in a func literal, then the last line of a body.
+    write(
+        root,
+        "src/nested.go",
+        "package a\n\ntype T struct{}\n\nfunc (T) M() func() {\n\treturn func() {\n\t\tif true {\n\t\t\t/* deep */\n\t\t}\n\t}\n}\n",
+    );
+    write(
+        root,
+        "src/last.go",
+        "package a\n\nfunc L() {\n\treturn\n\t// last\n}\n",
+    );
+    git(root, &["add", "-A"]);
+    let working = run(cli(&["check", "--format", "json"], &policy, root), 1);
+    let sha = commit(root);
+    let committed = run(
+        cli(
+            &["check", "--commit", &sha, "--format", "json"],
+            &policy,
+            root,
+        ),
+        1,
+    );
+    let rule = "source/no-go-function-body-comments";
+    let expected = vec![
+        (rule.into(), "src/directives.go".into(), 9, 17, 102, 108),
+        (rule.into(), "src/last.go".into(), 5, 2, 31, 38),
+        (rule.into(), "src/nested.go".into(), 8, 4, 82, 92),
+    ];
+    assert_eq!(findings(&working), expected);
+    assert_eq!(findings(&committed), expected);
+}
+
+#[test]
+fn go_files_the_grammar_cannot_parse_cannot_be_judged() {
+    let mut rule = comment_rule(json!({ "language": "go", "node": "comment" }));
+    rule["fixtures"] = json!([{ "path": "src/a.go", "content": "package a\n// c\n", "expect": { "line": 2, "column": 1 } }]);
+    let rule = policy(&[rule]);
+    let repo = tempfile::tempdir().unwrap();
+    let root = repo.path();
+    git(root, &["init", "-q"]);
+
+    write(
+        root,
+        "src/bad.go",
+        "package a\n\nfunc f() {\n\treturn (\n}\n",
+    );
+    git(root, &["add", "-A"]);
+    let error = run(cli(&["check"], &rule, root), 2);
+    assert!(
+        error.contains("[source/no-comments] src/bad.go: cannot parse as Go near"),
+        "{error}"
+    );
+
+    fs::remove_file(root.join("src/bad.go")).unwrap();
+    write(root, "src/a.ts", "// c\n");
+    git(root, &["add", "-A"]);
+    let error = run(cli(&["check"], &rule, root), 2);
+    assert!(
+        error.contains("src/a.ts: syntax rules for go apply to .go files; narrow the path scope"),
+        "{error}"
+    );
+}
+
+#[test]
+fn go_selector_names_are_checked_against_the_go_grammar() {
+    for (selector, message) in [
+        (
+            json!({ "language": "go", "node": "coment" }),
+            "selector node \"coment\" is not a named node kind in the Go grammar",
+        ),
+        (
+            // TypeScript kinds are not Go kinds: a rule can't be ported by
+            // changing the language alone.
+            json!({ "language": "go", "node": "comment",
+                    "inside": { "kinds": ["arrow_function"], "field": "body" } }),
+            "selector inside kind \"arrow_function\" is not a named node kind in the Go grammar",
+        ),
+        (
+            json!({ "language": "go", "node": "comment",
+                    "inside": { "kinds": ["function_declaration"], "field": "bdy" } }),
+            "selector inside.field \"bdy\" is not a field in the Go grammar",
+        ),
+        (
+            json!({ "language": "typescript", "node": "func_literal" }),
+            "selector node \"func_literal\" is not a named node kind in every TypeScript grammar",
+        ),
+    ] {
+        let error = run(
+            cli(
+                &["validate"],
+                &policy(&[comment_rule(selector)]),
+                Path::new(ROOT),
+            ),
+            2,
+        );
+        assert!(error.contains(message), "{error}");
     }
 }

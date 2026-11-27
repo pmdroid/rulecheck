@@ -24,12 +24,12 @@ check_result() {
 }
 
 if [[ "$#" == 0 ]]; then
-  set -- literal regex path scope exclude rule-sources multi-scope path-globs syntax syntax-reuse
+  set -- literal regex path scope exclude rule-sources multi-scope path-globs syntax syntax-reuse syntax-go
 fi
 
 for recipe in "$@"; do
   case "$recipe" in
-    literal|regex|path|scope|exclude|rule-sources|multi-scope|path-globs|syntax|syntax-reuse) ;;
+    literal|regex|path|scope|exclude|rule-sources|multi-scope|path-globs|syntax|syntax-reuse|syntax-go) ;;
     *) printf 'Unknown cookbook recipe: %s\n' "$recipe" >&2; exit 2 ;;
   esac
   working="$demo/$recipe"
@@ -94,6 +94,12 @@ for recipe in "$@"; do
       printf 'export function first(xs: string[]): string {\n  return xs[0] ?? "";\n}\n' > "$working/src/first.ts"
       finding='src/first.ts:2:10: [source/no-non-null-assertion] Check for null or undefined instead of asserting with !.'
       ;;
+    syntax-go)
+      # A doc comment, a compiler directive, a TODO, a lint directive and a
+      # string holding // are all allowed.
+      printf '// Package total sums numbers.\npackage total\n\n// Total adds xs.\n//\n//go:noinline\nfunc Total(xs []int) int {\n\t// TODO: use slices\n\tsum := 0\n\tfor _, x := range xs {\n\t\tsum += x //nolint:gosec\n\t}\n\t_ = "// not a comment"\n\treturn sum\n}\n' > "$working/src/total.go"
+      finding='src/total.go:4:2: [source/no-go-function-body-comments] Move the explanation out of the function body or into a name.'
+      ;;
   esac
 
   git -C "$working" add -f -- .
@@ -136,6 +142,7 @@ for recipe in "$@"; do
       ;;
     syntax) printf 'export function total(xs: number[]): number {\n  // add them up\n  return xs.reduce((a, b) => a + b, 0);\n}\n' > "$working/src/total.ts" ;;
     syntax-reuse) printf 'export function first(xs: string[]): string {\n  return xs[0]!;\n}\n' > "$working/src/first.ts" ;;
+    syntax-go) printf 'package total\n\nfunc Total(xs []int) (sum int) {\n\t// add them up\n\tfor _, x := range xs {\n\t\tsum += x\n\t}\n\treturn\n}\n' > "$working/src/total.go" ;;
   esac
 
   check_result 1 "$finding" "$cli" check --root "$working" <<<"$policy"

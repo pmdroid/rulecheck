@@ -88,7 +88,9 @@ impl LanguageName {
     /// The scope a rule needs, for files with any other extension.
     fn extensions(self) -> &'static str {
         match self {
-            Self::Typescript => "syntax rules for typescript apply to .ts, .mts, .cts and .tsx files",
+            Self::Typescript => {
+                "syntax rules for typescript apply to .ts, .mts, .cts and .tsx files"
+            }
             Self::Go => "syntax rules for go apply to .go files",
         }
     }
