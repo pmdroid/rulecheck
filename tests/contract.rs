@@ -19,7 +19,7 @@ const EXAMPLE: &str = include_str!("fixtures/literal-no-legacy-mode.rule.ts");
 const FINDING: &str = "https://github.com/pmdroid/rulecheck/pull/1#discussion_r1";
 
 fn cli(args: &[&str], policy: &[u8], root: &Path) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rulecheck"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rulecheck-evaluator"))
         .current_dir(root)
         .args(args)
         .stdin(Stdio::piped())

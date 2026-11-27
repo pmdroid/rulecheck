@@ -4,21 +4,22 @@ Rulecheck reads TypeScript rules as data and checks repository files for forbidd
 
 ## Install the CLI
 
-The npm package `@pmdroid/rulecheck` is the TypeScript authoring SDK, not the CLI. The full CLI currently installs from the GitHub checkout below. The Rust crate is not on crates.io yet.
+The npm package [`@pmdroid/rulecheck`](https://www.npmjs.com/package/@pmdroid/rulecheck)
+is the TypeScript authoring SDK, not the CLI.
 
-Install Git, Node.js 20 or later with npm, and [Rust via rustup](https://rustup.rs/). On Linux or macOS, clone Rulecheck into a directory of its own, install its pinned dependencies, build the release evaluator, and link the shipped entry point into a directory on your `PATH`:
+Install Git, Node.js 20 or later with npm, and [Rust via rustup](https://rustup.rs/)
+on Linux or macOS. The CLI is not on crates.io yet, so install it from GitHub:
 
-```bash
-git clone https://github.com/pmdroid/rulecheck.git ~/.local/share/rulecheck
-cd ~/.local/share/rulecheck
-npm ci --ignore-scripts
-cargo build --locked --release
-mkdir -p ~/.local/bin
-ln -sf "$PWD/bin/rulecheck.mjs" ~/.local/bin/rulecheck
-export PATH="$HOME/.local/bin:$PATH"  # add this line to your shell profile too
+```sh
+cargo install --locked --git https://github.com/pmdroid/rulecheck.git
+rulecheck --version
 ```
 
-`rulecheck` always uses the builder, TypeScript package, and `target/release/rulecheck` evaluator from that installation. It never takes them from the repository being checked or from `PATH`. Repeat the `npm ci` and `cargo build` steps after you update the clone.
+Cargo installs `rulecheck` and its companion `rulecheck-evaluator`. On the first
+rule command, Rulecheck installs its pinned TypeScript compiler into a user cache
+(`$XDG_CACHE_HOME/rulecheck` or `~/.cache/rulecheck`) using the npm registry.
+Later runs reuse the cache. No project `npm install`, separate CLI build step, or
+generated policy file is needed. Keep the two installed executables together.
 
 ## Check a repository
 
@@ -29,12 +30,26 @@ demo=$(mktemp -d)
 cd "$demo"
 git init -q
 mkdir -p .rulecheck/rules config
-cp ~/.local/share/rulecheck/.rulecheck/rules/no-legacy-mode.rule.ts .rulecheck/rules/
+cat > .rulecheck/rules/no-legacy-mode.rule.ts <<'RULE'
+import { defineRule } from "@pmdroid/rulecheck";
+
+export default defineRule({
+  id: "config/no-legacy-mode",
+  kind: "text",
+  paths: ["config/*.toml"],
+  pattern: { kind: "literal", value: "legacy_mode = true" },
+  remediation: "Remove legacy_mode or set it to false.",
+  fixtures: [
+    { path: "config/app.toml", content: "legacy_mode = false\n", expect: null },
+    { path: "config/app.toml", content: "legacy_mode = true\n", expect: { line: 1, column: 1 } },
+  ],
+});
+RULE
 printf 'legacy_mode = false\n' > config/app.toml
 git add -A
 
 rulecheck test
-# 7 fixtures passed
+# 2 fixtures passed
 rulecheck check
 echo "$?"  # 0
 
@@ -78,16 +93,16 @@ Pass `--format json` to `check` for one versioned result document on stdout ([`s
 
 The builder limits each source to 128 KiB. Policy input is capped at 1 MiB and 128 rules. The scanner limits each scoped text file to 1 MiB, total scoped text to 64 MiB, Git index output to 8 MiB, and output to 10,000 findings. The installed command stops the builder and the evaluator after 120 s each. Run against a checkout that stays stable during the command.
 
-To verify reproducible output, run `node tools/reproduce.mjs /path/to/repo "$SHA" target/release/rulecheck`. It builds policy from that commit twice, checks the commit with each build, and exits 0 only when the policy bytes, fixture results, findings and their order all match. It records wall time without judging it. CI runs it from a fresh checkout as the `reproduce` job.
+To verify reproducible output, run `node tools/reproduce.mjs /path/to/repo "$SHA" target/release/rulecheck-evaluator`. It builds policy from that commit twice, checks the commit with each build, and exits 0 only when the policy bytes, fixture results, findings and their order all match. It records wall time without judging it. CI runs it from a fresh checkout as the `reproduce` job.
 
 ### Low-level pipeline
 
-Tooling can still run the two stages separately. The builder writes the version 1 policy JSON to stdout. The evaluator binary reads it from stdin with the same commands and flags:
+Tooling can still run the two stages separately. The builder writes the version 1 policy JSON to stdout. The evaluator binary reads it from stdin with the same commands and flags. If you previously called the raw Rust binary at `target/release/rulecheck`, switch that pipeline to `target/release/rulecheck-evaluator`:
 
 ```bash
 set -o pipefail
 node tools/build.mjs --root /path/to/checkout |
-  target/release/rulecheck check --root /path/to/checkout
+  target/release/rulecheck-evaluator check --root /path/to/checkout
 ```
 
 `npm run --silent build -- [--root DIR] [--commit SHA]` runs the same builder. Exact-commit shadow CI uses this pipeline with separately pinned tools.
@@ -105,7 +120,7 @@ To reproduce with trusted tools and both Git objects available locally:
 ```sh
 npm ci --ignore-scripts
 cargo build --locked
-node tools/check-ci.mjs /path/to/git-repo "$BASE_SHA" "$CANDIDATE_SHA" target/debug/rulecheck > evidence.json
+node tools/check-ci.mjs /path/to/git-repo "$BASE_SHA" "$CANDIDATE_SHA" target/debug/rulecheck-evaluator > evidence.json
 ```
 
 ## Development

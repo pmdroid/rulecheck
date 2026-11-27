@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 
 const install = realpathSync(fileURLToPath(new URL("..", import.meta.url)));
 const builder = join(install, "tools", "build.mjs");
-const evaluator = join(install, "target", "release", "rulecheck");
+const evaluator = join(install, "target", "release", "rulecheck-evaluator");
 const guard = "RULECHECK_WRAPPER_ACTIVE";
 const maxPolicy = 1024 * 1024;
 const maxResult = 64 * 1024 * 1024;

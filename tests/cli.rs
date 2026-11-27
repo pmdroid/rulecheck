@@ -23,7 +23,7 @@ export default defineRule({
 "#;
 
 fn cli(args: &[&str], policy: &[u8], root: &Path) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rulecheck"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rulecheck-evaluator"))
         .current_dir(root)
         .args(args)
         .stdin(Stdio::piped())
@@ -61,8 +61,8 @@ fn installed_check(root: &Path) -> Output {
     )
     .unwrap();
     fs::copy(
-        env!("CARGO_BIN_EXE_rulecheck"),
-        dir.join("target/release/rulecheck"),
+        env!("CARGO_BIN_EXE_rulecheck-evaluator"),
+        dir.join("target/release/rulecheck-evaluator"),
     )
     .unwrap();
     Command::new("node")
@@ -129,7 +129,7 @@ fn check_ci_with_reviews(
         .current_dir(root)
         .arg(Path::new(ROOT).join("tools/check-ci.mjs"))
         .arg(root)
-        .args([base, candidate, env!("CARGO_BIN_EXE_rulecheck")])
+        .args([base, candidate, env!("CARGO_BIN_EXE_rulecheck-evaluator")])
         .env("RULECHECK_TOOL_SHA", base)
         .env_remove("RULECHECK_POLICY_REVIEWS");
     if let Some(reviews) = reviews {

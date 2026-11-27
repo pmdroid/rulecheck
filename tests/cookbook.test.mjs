@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const evaluator = resolve(process.env.RULECHECK_BIN ?? join(root, "target/debug/rulecheck"));
+const evaluator = resolve(process.env.RULECHECK_BIN ?? join(root, "target/debug/rulecheck-evaluator"));
 const recipe = (clean, bad, finding) => ({ clean, bad, finding });
 const recipes = {
   literal: recipe({ "config/app.toml": "legacy_mode = false\n" },

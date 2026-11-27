@@ -58,7 +58,7 @@ jobs:
           RULECHECK_POLICY_REVIEWS: ${{ runner.temp }}/rulecheck-reviews.jsonl
         run: |
           node tools/check-ci.mjs "$RUNNER_TEMP/rulecheck-objects" \
-            "$BASE_SHA" "$CANDIDATE_SHA" target/release/rulecheck \
+            "$BASE_SHA" "$CANDIDATE_SHA" target/release/rulecheck-evaluator \
             > "$RUNNER_TEMP/rulecheck-evidence.json"
       - name: Upload evidence
         if: ${{ !cancelled() && (steps.evaluate.outcome == 'success' || steps.evaluate.outcome == 'failure') }}

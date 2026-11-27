@@ -137,12 +137,12 @@ Rule sources under `.rulecheck/` are scan candidates like any other file, in bot
 
 ## Low-level pipeline
 
-For tooling, the two stages also run separately. `node tools/build.mjs [--root DIR] [--commit SHA]` (or `npm run --silent build -- ...`) in the Rulecheck checkout writes the policy JSON to stdout. The evaluator binary `target/release/rulecheck` (or `target/debug/rulecheck`) reads it from stdin with the same commands and flags:
+For tooling, the two stages also run separately. `node tools/build.mjs [--root DIR] [--commit SHA]` (or `npm run --silent build -- ...`) in the Rulecheck checkout writes the policy JSON to stdout. The evaluator binary `target/release/rulecheck-evaluator` (or `target/debug/rulecheck-evaluator`) reads it from stdin with the same commands and flags:
 
 ```bash
 set -o pipefail
 node tools/build.mjs --root /path/to/checkout |
-  target/release/rulecheck check --root /path/to/checkout
+  target/release/rulecheck-evaluator check --root /path/to/checkout
 ```
 
 The shadow CI workflow uses this pipeline with separately pinned tools.
