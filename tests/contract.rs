@@ -513,7 +513,8 @@ fn schema_sdk_and_evaluator_accept_the_same_rule_fields() {
             "paths",
             "pattern",
             "provenance",
-            "remediation"
+            "remediation",
+            "selector"
         ]
     );
     assert_eq!(
@@ -543,6 +544,8 @@ fn schema_sdk_and_evaluator_accept_the_same_rule_fields() {
         "remediation: string;",
         "kind: \"text\";",
         "kind: \"forbidden-path\";",
+        "kind: \"syntax\";",
+        "selector: Selector;",
         "pattern: { kind: \"literal\" | \"regex\"; value: string };",
         "path: string; content: string; expect: Location | null",
         "path: string; expect: Location | null",

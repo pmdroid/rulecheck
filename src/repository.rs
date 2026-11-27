@@ -154,7 +154,11 @@ fn scan<'a, 'p>(
 
         for (index, rule) in &mut applicable {
             hits[index] += 1;
-            if let Some((location, span)) = rule.matcher.find(content.as_deref()) {
+            let found = rule
+                .matcher
+                .find(path, content.as_deref())
+                .map_err(|err| format!("[{}] {path}: {err}", rule.id))?;
+            if let Some((location, span)) = found {
                 if findings.len() >= MAX_FINDINGS {
                     return Err(context("more than 10,000 findings; narrow the path scope"));
                 }

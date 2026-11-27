@@ -21,7 +21,7 @@
       "additionalProperties": false,
       "properties": {
         "id": { "type": "string", "maxLength": 128, "pattern": "^[a-z0-9-]+(/[a-z0-9-]+)*$" },
-        "kind": { "enum": ["text", "forbidden-path"] },
+        "kind": { "enum": ["text", "forbidden-path", "syntax"] },
         "paths": {
           "type": "array",
           "minItems": 1,
@@ -44,6 +44,7 @@
             "value": { "type": "string", "minLength": 1, "maxLength": 4096 }
           }
         },
+        "selector": { "$ref": "#/$defs/selector" },
         "provenance": {
           "type": "object",
           "required": ["finding"],
@@ -66,11 +67,61 @@
       "if": { "properties": { "kind": { "const": "text" } } },
       "then": {
         "required": ["pattern"],
+        "not": { "required": ["selector"] },
         "properties": { "fixtures": { "items": { "required": ["content"] } } }
       },
       "else": {
-        "not": { "required": ["pattern"] },
-        "properties": { "fixtures": { "items": { "not": { "required": ["content"] } } } }
+        "if": { "properties": { "kind": { "const": "syntax" } } },
+        "then": {
+          "required": ["selector"],
+          "not": { "required": ["pattern"] },
+          "properties": { "fixtures": { "items": { "required": ["content"] } } }
+        },
+        "else": {
+          "not": { "required": ["pattern"] },
+          "properties": {
+            "selector": { "not": {} },
+            "fixtures": { "items": { "not": { "required": ["content"] } } }
+          }
+        }
+      }
+    },
+    "selector": {
+      "description": "Selects nodes of one named tree-sitter node kind. typescript parses .ts, .mts and .cts files with the TypeScript grammar and .tsx files with the TSX grammar. Rulecheck checks node kinds and fields against both grammars.",
+      "type": "object",
+      "required": ["language", "node"],
+      "additionalProperties": false,
+      "properties": {
+        "language": { "enum": ["typescript"] },
+        "node": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "inside": {
+          "type": "object",
+          "required": ["kinds"],
+          "additionalProperties": false,
+          "properties": {
+            "kinds": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 16,
+              "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+            },
+            "field": { "type": "string", "minLength": 1, "maxLength": 128 }
+          }
+        },
+        "ignore": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "required": ["kind", "value"],
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "enum": ["literal", "regex"] },
+              "value": { "type": "string", "minLength": 1, "maxLength": 4096 }
+            }
+          }
+        }
       }
     },
     "fixture": {

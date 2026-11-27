@@ -178,10 +178,11 @@ function checkShape(rule, fail) {
   }
 
   if (!isObject(rule)) fail(undefined, undefined, "The rule must be an object", "Pass an object literal to defineRule.");
-  fields(rule, "the rule", ["id", "kind", "paths", "exclude", "remediation", "pattern", "provenance", "fixtures"],
+  fields(rule, "the rule", ["id", "kind", "paths", "exclude", "remediation", "pattern", "selector", "provenance", "fixtures"],
     ["id", "kind", "paths", "remediation", "fixtures"]);
   expect(rule, "id", "rule", (value) => typeof value === "string", "a string");
-  expect(rule, "kind", "rule", (value) => ["text", "forbidden-path"].includes(value), '"text" or "forbidden-path"');
+  expect(rule, "kind", "rule", (value) => ["text", "forbidden-path", "syntax"].includes(value),
+    '"text", "forbidden-path" or "syntax"');
   expect(rule, "paths", "rule", isStrings, "an array of glob strings");
   expect(rule, "exclude", "rule", isStrings, "an array of glob strings");
   expect(rule, "remediation", "rule", (value) => typeof value === "string", "a string");
@@ -191,14 +192,45 @@ function checkShape(rule, fail) {
     fields(rule.provenance, "the provenance", ["finding"], ["finding"]);
     expect(rule.provenance, "finding", "provenance", isFindingUrl, "an https:// URL of at most 2048 characters");
   }
-  const text = rule.kind === "text";
-  if (text && !Object.hasOwn(rule, "pattern")) {
+  const syntax = rule.kind === "syntax";
+  const text = rule.kind === "text" || syntax;
+  if (rule.kind === "text" && !Object.hasOwn(rule, "pattern")) {
     fail(rule, undefined, "Text rules require a pattern", 'Add pattern: { kind: "literal", value: "..." }.');
   }
-  if (!text && Object.hasOwn(rule, "pattern")) {
-    fail(rule, "pattern", "Forbidden-path rules have no pattern", "Remove pattern.");
+  if (rule.kind !== "text" && Object.hasOwn(rule, "pattern")) {
+    fail(rule, "pattern", `${syntax ? "Syntax" : "Forbidden-path"} rules have no pattern`,
+      syntax ? "Use selector instead of pattern." : "Remove pattern.");
   }
-  if (text) {
+  if (syntax && !Object.hasOwn(rule, "selector")) {
+    fail(rule, undefined, "Syntax rules require a selector", 'Add selector: { language: "typescript", node: "comment" }.');
+  }
+  if (!syntax && Object.hasOwn(rule, "selector")) {
+    fail(rule, "selector", "Only syntax rules have a selector", 'Remove selector or use kind: "syntax".');
+  }
+  if (syntax) {
+    expect(rule, "selector", "rule", isObject, "a selector object");
+    const selector = rule.selector;
+    fields(selector, "the selector", ["language", "node", "inside", "ignore"], ["language", "node"]);
+    expect(selector, "language", "selector", (value) => value === "typescript", '"typescript"');
+    expect(selector, "node", "selector", (value) => typeof value === "string", "a node kind string");
+    if (Object.hasOwn(selector, "inside")) {
+      expect(selector, "inside", "selector", isObject, "an object { kinds, field }");
+      fields(selector.inside, "the selector inside", ["kinds", "field"], ["kinds"]);
+      expect(selector.inside, "kinds", "selector inside", isStrings, "an array of node kind strings");
+      expect(selector.inside, "field", "selector inside", (value) => typeof value === "string", "a field name string");
+    }
+    if (Object.hasOwn(selector, "ignore")) {
+      expect(selector, "ignore", "selector", (value) => Array.isArray(value), "an array of text filters");
+      for (const [index, filter] of selector.ignore.entries()) {
+        const label = `selector ignore ${index + 1}`;
+        if (!isObject(filter)) fail(selector.ignore, index, `${label} must be an object`, 'Write { kind: "regex", value: "..." }.');
+        fields(filter, label, ["kind", "value"], ["kind", "value"]);
+        expect(filter, "kind", label, (value) => ["literal", "regex"].includes(value), '"literal" or "regex"');
+        expect(filter, "value", label, (value) => typeof value === "string", "a string");
+      }
+    }
+  }
+  if (rule.kind === "text") {
     expect(rule, "pattern", "rule", isObject, "a pattern object");
     fields(rule.pattern, "the pattern", ["kind", "value"], ["kind", "value"]);
     expect(rule.pattern, "kind", "pattern", (value) => ["literal", "regex"].includes(value), '"literal" or "regex"');

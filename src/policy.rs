@@ -1,3 +1,4 @@
+use crate::syntax::{Selector, SyntaxMatcher};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Deserializer};
@@ -29,6 +30,8 @@ struct Rule {
     #[serde(default, deserialize_with = "present")]
     pattern: Option<Pattern>,
     #[serde(default, deserialize_with = "present")]
+    selector: Option<Selector>,
+    #[serde(default, deserialize_with = "present")]
     provenance: Option<Provenance>,
     fixtures: Vec<Fixture>,
 }
@@ -46,6 +49,7 @@ struct Provenance {
 enum Kind {
     Text,
     ForbiddenPath,
+    Syntax,
 }
 
 #[derive(Deserialize)]
@@ -91,9 +95,10 @@ pub enum Matcher {
     Literal(String),
     Regex(Regex),
     ForbiddenPath,
+    Syntax(SyntaxMatcher),
 }
 
-fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+pub(crate) fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
     deserializer: D,
 ) -> std::result::Result<Option<T>, D::Error> {
     T::deserialize(deserializer).map(Some)
@@ -190,10 +195,17 @@ impl Rule {
             Some(_) => return Err("provide 1 to 16 exclude globs or omit exclude".into()),
         };
 
-        let matcher = match (self.kind, self.pattern) {
-            (Kind::Text, Some(pattern)) => Matcher::compile(pattern)?,
-            (Kind::ForbiddenPath, None) => Matcher::ForbiddenPath,
-            _ => return Err("text rules require a pattern; forbidden-path rules omit it".into()),
+        let matcher = match (self.kind, self.pattern, self.selector) {
+            (Kind::Text, Some(pattern), None) => Matcher::compile(pattern)?,
+            (Kind::ForbiddenPath, None, None) => Matcher::ForbiddenPath,
+            (Kind::Syntax, None, Some(selector)) => Matcher::Syntax(selector.compile()?),
+            _ => {
+                return Err(
+                    "text rules require a pattern, syntax rules require a selector, \
+                     forbidden-path rules omit both"
+                        .into(),
+                );
+            }
         };
 
         if !(1..=64).contains(&self.fixtures.len()) {
@@ -281,34 +293,46 @@ impl Matcher {
         !matches!(self, Self::ForbiddenPath)
     }
 
-    pub fn location(&self, content: Option<&str>) -> Option<Location> {
-        self.find(content).map(|(location, _)| location)
+    pub fn location(&self, path: &str, content: Option<&str>) -> Result<Option<Location>> {
+        Ok(self.find(path, content)?.map(|(location, _)| location))
     }
 
     /// The first match as a one-based line and Unicode scalar column, plus its
     /// zero-based, half-open UTF-8 byte range. Forbidden paths have no range.
-    pub fn find(&self, content: Option<&str>) -> Option<(Location, Option<Span>)> {
-        let span = match self {
-            Self::Literal(value) => {
-                let start = content?.find(value)?;
-                Span {
-                    start,
-                    end: start + value.len(),
-                }
-            }
-            Self::Regex(regex) => {
-                let found = regex.find(content?)?;
-                Span {
-                    start: found.start(),
-                    end: found.end(),
-                }
-            }
-            Self::ForbiddenPath => return Some((Location { line: 1, column: 1 }, None)),
+    /// Only a syntax rule can fail, when its file does not parse.
+    pub fn find(
+        &self,
+        path: &str,
+        content: Option<&str>,
+    ) -> Result<Option<(Location, Option<Span>)>> {
+        let Some(content) = content else {
+            return Ok(matches!(self, Self::ForbiddenPath)
+                .then_some((Location { line: 1, column: 1 }, None)));
         };
-        let before = &content?[..span.start];
-        let line = before.bytes().filter(|byte| *byte == b'\n').count() + 1;
-        let column = before.rsplit('\n').next()?.chars().count() + 1;
-        Some((Location { line, column }, Some(span)))
+        let span = match self {
+            Self::Literal(value) => content.find(value).map(|start| Span {
+                start,
+                end: start + value.len(),
+            }),
+            Self::Regex(regex) => regex.find(content).map(|found| Span {
+                start: found.start(),
+                end: found.end(),
+            }),
+            Self::Syntax(selector) => selector.find(path, content)?,
+            Self::ForbiddenPath => return Ok(Some((Location { line: 1, column: 1 }, None))),
+        };
+        Ok(span.map(|span| {
+            let before = &content[..span.start];
+            let line = before.bytes().filter(|byte| *byte == b'\n').count() + 1;
+            let column = before
+                .rsplit('\n')
+                .next()
+                .unwrap_or_default()
+                .chars()
+                .count()
+                + 1;
+            (Location { line, column }, Some(span))
+        }))
     }
 }
 

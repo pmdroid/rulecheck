@@ -1,5 +1,6 @@
 mod policy;
 mod repository;
+mod syntax;
 
 use policy::{CompiledRule, Location, Result};
 use repository::Report;
@@ -279,12 +280,22 @@ fn finding_json(finding: &repository::Finding) -> Value {
 
 fn test(rules: &[&CompiledRule]) -> bool {
     let mut failures = Vec::new();
+    let mut errors = Vec::new();
     let mut count = 0;
     for rule in rules {
         for (index, fixture) in rule.fixtures.iter().enumerate() {
             count += 1;
             let actual = if rule.applies_to(&fixture.path) {
-                rule.matcher.location(fixture.content.as_deref())
+                match rule
+                    .matcher
+                    .location(&fixture.path, fixture.content.as_deref())
+                {
+                    Ok(actual) => actual,
+                    Err(error) => {
+                        errors.push((&fixture.path, &rule.id, index, error));
+                        continue;
+                    }
+                }
             } else {
                 None
             };
@@ -310,10 +321,17 @@ fn test(rules: &[&CompiledRule]) -> bool {
             describe(*actual)
         );
     }
-    if failures.is_empty() {
+    errors.sort_unstable();
+    for (path, id, index, error) in &errors {
+        println!(
+            "{path}:1:1: [{id}] fixture {} cannot be judged: {error}. Fix the fixture content.",
+            index + 1
+        );
+    }
+    if failures.is_empty() && errors.is_empty() {
         println!("{count} fixtures passed");
     }
-    failures.is_empty()
+    failures.is_empty() && errors.is_empty()
 }
 
 fn describe(location: Option<Location>) -> String {

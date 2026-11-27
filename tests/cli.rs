@@ -519,7 +519,7 @@ fn builder_reports_rule_shape_errors_at_the_rule_file() {
             "remediation:",
             "remedy:",
             "10:3: Unknown property remedy in the rule. \
-             Use id, kind, paths, exclude, remediation, pattern, provenance and fixtures.",
+             Use id, kind, paths, exclude, remediation, pattern, selector, provenance and fixtures.",
         ),
         (
             "content: \"legacy_mode = false\\n\", ",
@@ -548,6 +548,11 @@ fn builder_reports_rule_shape_errors_at_the_rule_file() {
             "kind: \"text\"",
             "kind: \"forbidden-path\"",
             "9:3: Forbidden-path rules have no pattern. Remove pattern.",
+        ),
+        (
+            "kind: \"text\"",
+            "kind: \"syntax\"",
+            "9:3: Syntax rules have no pattern. Use selector instead of pattern.",
         ),
     ] {
         assert!(LITERAL_RULE.contains(from), "{from}");
