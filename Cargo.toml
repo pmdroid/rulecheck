@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "Deterministic repository checks for TypeScript-authored rules"
 publish = false
+exclude = ["/docs/"]
 
 [dependencies]
 globset = "0.4"
