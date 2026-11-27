@@ -17,7 +17,7 @@ const REUSE: &str = include_str!("../docs/examples/rules/syntax-reuse.rule.ts");
 const RUST: &str = include_str!("../docs/examples/rules/syntax-rust.rule.ts");
 
 fn cli(args: &[&str], policy: &[u8], root: &Path) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rulecheck"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rulecheck-evaluator"))
         .current_dir(root)
         .args(args)
         .stdin(Stdio::piped())

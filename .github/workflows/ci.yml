@@ -27,6 +27,31 @@ jobs:
       - run: cargo build --locked
       - run: node --test tests/cookbook.test.mjs
 
+  cargo-install:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.22.3'
+          package-manager-cache: false
+      - run: rustup toolchain install stable --profile minimal
+      - name: Install from the packaged crate
+        shell: bash
+        run: |
+          cargo package --locked
+          for archive in target/package/rulecheck-*.crate; do
+            source="${archive%.crate}"
+          done
+          cargo install --debug --locked --path "$source" --root "$RUNNER_TEMP/rulecheck-install"
+          RULECHECK_INSTALLED_BIN="$RUNNER_TEMP/rulecheck-install/bin/rulecheck" node --test tests/installed-cli.test.mjs
+
   reproduce:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -46,7 +71,7 @@ jobs:
       - name: Build and check this commit twice
         shell: bash
         run: |
-          node tools/reproduce.mjs . "$(git rev-parse HEAD)" target/release/rulecheck |
+          node tools/reproduce.mjs . "$(git rev-parse HEAD)" target/release/rulecheck-evaluator |
             tee "$RUNNER_TEMP/rulecheck-reproduction.json"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}

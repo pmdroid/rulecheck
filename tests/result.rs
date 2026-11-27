@@ -21,7 +21,7 @@ fn result_schema() -> Value {
 }
 
 fn cli(args: &[&str], policy: &[u8], root: &Path) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rulecheck"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rulecheck-evaluator"))
         .current_dir(root)
         .args(args)
         .stdin(Stdio::piped())
@@ -532,7 +532,7 @@ fn reproduction_builds_twice_and_compares_results() {
     let output = run(&[
         root.to_str().unwrap(),
         &sha,
-        env!("CARGO_BIN_EXE_rulecheck"),
+        env!("CARGO_BIN_EXE_rulecheck-evaluator"),
     ]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -559,7 +559,7 @@ fn reproduction_builds_twice_and_compares_results() {
     let output = run(&[
         root.to_str().unwrap(),
         &"0".repeat(40),
-        env!("CARGO_BIN_EXE_rulecheck"),
+        env!("CARGO_BIN_EXE_rulecheck-evaluator"),
     ]);
     assert_eq!(output.status.code(), Some(2));
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -573,7 +573,7 @@ fn reproduction_builds_twice_and_compares_results() {
     let output = run(&[
         root.to_str().unwrap(),
         "HEAD",
-        env!("CARGO_BIN_EXE_rulecheck"),
+        env!("CARGO_BIN_EXE_rulecheck-evaluator"),
     ]);
     assert_eq!(output.status.code(), Some(2));
 }

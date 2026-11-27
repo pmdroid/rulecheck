@@ -2,7 +2,7 @@
   "name": "@pmdroid/rulecheck",
   "version": "0.1.1",
   "description": "TypeScript SDK for authoring Rulecheck policies",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/pmdroid/rulecheck.git",

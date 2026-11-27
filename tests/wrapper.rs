@@ -36,8 +36,8 @@ impl Install {
         )
         .unwrap();
         fs::copy(
-            env!("CARGO_BIN_EXE_rulecheck"),
-            root.join("target/release/rulecheck"),
+            env!("CARGO_BIN_EXE_rulecheck-evaluator"),
+            root.join("target/release/rulecheck-evaluator"),
         )
         .unwrap();
         fs::create_dir(dir.path().join("bin")).unwrap();
@@ -150,7 +150,7 @@ fn hostile_repo(markers: &Path) -> TempDir {
                 mark("builder")
             ),
         ),
-        ("target/release/rulecheck".to_owned(), format!("#!/bin/sh\n{}\n", script("evaluator"))),
+        ("target/release/rulecheck-evaluator".to_owned(), format!("#!/bin/sh\n{}\n", script("evaluator"))),
     ];
     for (path, contents) in files {
         let path = root.join(path);
@@ -254,7 +254,7 @@ fn installed_wrapper_never_launches_itself_as_the_evaluator() {
     let install = Install::new();
     let markers = tempfile::tempdir().unwrap();
     let repo = hostile_repo(markers.path());
-    let evaluator = install.root().join("target/release/rulecheck");
+    let evaluator = install.root().join("target/release/rulecheck-evaluator");
 
     fs::remove_file(&evaluator).unwrap();
     let error = expect(&install.run(repo.path(), &["check"]), 2, "");

@@ -7,37 +7,51 @@ The npm package `@pmdroid/rulecheck` is the TypeScript authoring SDK, not the CL
 
 ## Install the `rulecheck` command
 
-Install Git, Node.js 20 or later with npm, and Rust via rustup on Linux or macOS.
+Install Git, Node.js 20 or later with npm, and [Rust via rustup](https://rustup.rs/)
+on Linux or macOS. The CLI is not on crates.io yet, so install it from GitHub:
 
-Install once from a clone that stays in place. The command uses the builder, pinned TypeScript, and release evaluator from that clone, never from the repository it checks.
-
-```bash
-git clone https://github.com/pmdroid/rulecheck.git ~/.local/share/rulecheck
-cd ~/.local/share/rulecheck
-npm ci --ignore-scripts
-cargo build --locked --release
-mkdir -p ~/.local/bin
-ln -sf "$PWD/bin/rulecheck.mjs" ~/.local/bin/rulecheck
-export PATH="$HOME/.local/bin:$PATH"  # add this line to your shell profile too
+```sh
+cargo install --locked --git https://github.com/pmdroid/rulecheck.git
+rulecheck --version
 ```
+
+Cargo installs `rulecheck` and its companion `rulecheck-evaluator`. On the first
+rule command, Rulecheck installs its pinned TypeScript compiler into a user cache
+(`$XDG_CACHE_HOME/rulecheck` or `~/.cache/rulecheck`) using the npm registry.
+Later runs reuse the cache. No project `npm install`, separate CLI build step, or
+generated policy file is needed. Keep the two installed executables together.
 
 ## Try a rule
 
-After adding the CLI to your PATH, try the bundled literal rule in a throwaway Git repository:
+After adding the CLI to your PATH, try a literal rule in a throwaway Git repository:
 
 ```sh
 demo=$(mktemp -d)
 cd "$demo"
 git init -q
 mkdir -p .rulecheck/rules config
-cp ~/.local/share/rulecheck/docs/examples/rules/literal.rule.ts .rulecheck/rules/
+cat > .rulecheck/rules/no-legacy-mode.rule.ts <<'RULE'
+import { defineRule } from "@pmdroid/rulecheck";
+
+export default defineRule({
+  id: "config/no-legacy-mode",
+  kind: "text",
+  paths: ["config/*.toml"],
+  pattern: { kind: "literal", value: "legacy_mode = true" },
+  remediation: "Remove legacy_mode or set it to false.",
+  fixtures: [
+    { path: "config/app.toml", content: "legacy_mode = false\n", expect: null },
+    { path: "config/app.toml", content: "legacy_mode = true\n", expect: { line: 1, column: 1 } },
+  ],
+});
+RULE
 printf 'legacy_mode = false\n' > config/app.toml
 git add .rulecheck/rules config/app.toml
 
 rulecheck test
 rulecheck check
 printf 'legacy_mode = true\n' > config/app.toml
-rulecheck check   # exit 1: config/app.toml:1:1 [config/no-legacy-spelling]
+rulecheck check   # exit 1: config/app.toml:1:1 [config/no-legacy-mode]
 ```
 
 ## Check your repository
