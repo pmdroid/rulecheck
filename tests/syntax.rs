@@ -1,7 +1,8 @@
 //! Pins the `syntax` rule kind: the TypeScript/TSX comment selector from the
 //! cookbook, a second rule that reuses it with no evaluator change, a shadow
 //! comparison against the existing regex text checker, files that cannot be
-//! judged, and the exact parser and grammar versions.
+//! judged, and the exact parser and grammar versions. The Rust recipe pins the
+//! same selector over the second language.
 mod common;
 
 use serde_json::{Value, json};
@@ -13,6 +14,7 @@ use std::process::{Command, Output, Stdio};
 const ROOT: &str = env!("CARGO_MANIFEST_DIR");
 const COMMENTS: &str = include_str!("../docs/examples/rules/syntax.rule.ts");
 const REUSE: &str = include_str!("../docs/examples/rules/syntax-reuse.rule.ts");
+const RUST: &str = include_str!("../docs/examples/rules/syntax-rust.rule.ts");
 
 fn cli(args: &[&str], policy: &[u8], root: &Path) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_rulecheck"))
@@ -425,8 +427,27 @@ fn selector_names_are_checked_against_both_grammars() {
             "invalid selector ignore regex",
         ),
         (
-            json!({ "language": "rust", "node": "line_comment" }),
-            "unknown variant `rust`",
+            json!({ "language": "go", "node": "comment" }),
+            "unknown variant `go`, expected `typescript` or `rust`",
+        ),
+        (
+            // Rust has line_comment and block_comment, no plain comment kind.
+            json!({ "language": "rust", "node": "comment" }),
+            "selector node \"comment\" is not a named node kind in every Rust grammar",
+        ),
+        (
+            json!({ "language": "typescript", "node": "line_comment" }),
+            "selector node \"line_comment\" is not a named node kind in every TypeScript grammar",
+        ),
+        (
+            json!({ "language": "rust", "node": "line_comment",
+                    "inside": { "kinds": ["function_declaration"] } }),
+            "selector inside kind \"function_declaration\" is not a named node kind in every Rust grammar",
+        ),
+        (
+            json!({ "language": "rust", "node": "line_comment",
+                    "inside": { "kinds": ["function_item"], "field": "bdy" } }),
+            "selector inside.field \"bdy\" is not a field in every Rust grammar",
         ),
         (
             json!({ "language": "typescript", "node": "comment", "query": "(comment)" }),
@@ -452,6 +473,7 @@ fn parser_and_grammar_versions_are_pinned() {
     for (name, version) in [
         ("tree-sitter", "0.27.2"),
         ("tree-sitter-typescript", "0.23.2"),
+        ("tree-sitter-rust", "0.24.2"),
     ] {
         assert!(
             manifest.contains(&format!("\n{name} = \"={version}\"\n")),
@@ -462,4 +484,115 @@ fn parser_and_grammar_versions_are_pinned() {
             "Cargo.lock must resolve {name} {version}"
         );
     }
+}
+
+#[test]
+fn rust_recipe_passes_its_fixtures_and_matches_the_schema() {
+    let (repo, policy) = repo_with(&[("syntax-rust.rule.ts", RUST)]);
+    assert_eq!(
+        run(cli(&["test"], &policy, repo.path()), 0),
+        "16 fixtures passed\n"
+    );
+    let schema: Value = serde_json::from_str(include_str!("../schema/policy-v1.json")).unwrap();
+    let value: Value = serde_json::from_slice(&policy).unwrap();
+    assert_eq!(common::violations(&schema, &value), Vec::<String>::new());
+    let selector = &value["rules"][0]["selector"];
+    assert_eq!(selector["language"], "rust");
+    assert_eq!(selector["node"], "line_comment");
+}
+
+/// Rust files with comments in every position the selector distinguishes,
+/// checked from the working tree and from the commit. A block-comment rule
+/// built from the same `inside` value needs no evaluator change.
+#[test]
+fn rust_selector_reports_the_first_real_function_body_comment_per_file() {
+    let (repo, policy) = repo_with(&[("syntax-rust.rule.ts", RUST)]);
+    let mut value: Value = serde_json::from_slice(&policy).unwrap();
+    let mut blocks = value["rules"][0].clone();
+    blocks["id"] = json!("source/no-rust-block-comments");
+    blocks["selector"]["node"] = json!("block_comment");
+    blocks["selector"].as_object_mut().unwrap().remove("ignore");
+    blocks["fixtures"] = json!([
+        { "path": "src/a.rs", "content": "fn f() {\n    /* c */\n}\n", "expect": { "line": 2, "column": 5 } },
+        { "path": "src/a.rs", "content": "fn f() -> /* c */ i32 {\n    1\n}\n", "expect": null }
+    ]);
+    value["rules"].as_array_mut().unwrap().push(blocks);
+    let policy = value.to_string().into_bytes();
+    assert_eq!(
+        run(cli(&["test"], &policy, repo.path()), 0),
+        "18 fixtures passed\n"
+    );
+
+    let root = repo.path();
+    write(
+        root,
+        "src/nested.rs",
+        "//! Header.\npub fn f(x: Option<i32>) -> // return type\n    i32 {\n    // TODO: later\n    match x {\n        Some(v) => {\n            // deep\n            v\n        }\n        None => 0,\n    }\n}\n",
+    );
+    write(
+        root,
+        "src/strings.rs",
+        "pub fn f() -> String {\n    let a = \"// no\";\n    let b = r#\"/* no */ // no\"#;\n    let c = '/';\n    format!(\"{a}{b}{c}\")\n}\n",
+    );
+    write(
+        root,
+        "src/directives.rs",
+        "pub fn f(p: *const i32) -> i32 {\n    // SAFETY: the caller passes a valid pointer.\n    let v = unsafe { *p };\n    // FIXME: overflow\n    v + 1 // why\n}\n",
+    );
+    write(
+        root,
+        "src/blocks.rs",
+        "pub fn f() -> /* type */ i32 {\n    let add = |a: i32, b: i32| {\n        /* inner */ a + b\n    };\n    add(1, 2)\n}\n",
+    );
+    git(root, &["add", "-A"]);
+    let working = run(cli(&["check", "--format", "json"], &policy, root), 1);
+    let sha = commit(root);
+    let committed = run(
+        cli(
+            &["check", "--commit", &sha, "--format", "json"],
+            &policy,
+            root,
+        ),
+        1,
+    );
+    let lines = "source/no-rust-function-body-comments";
+    let blocks = "source/no-rust-block-comments";
+    let expected = vec![
+        (blocks.into(), "src/blocks.rs".into(), 3, 9, 72, 83),
+        (lines.into(), "src/directives.rs".into(), 5, 11, 143, 149),
+        (lines.into(), "src/nested.rs".into(), 7, 13, 131, 138),
+    ];
+    assert_eq!(findings(&working), expected);
+    assert_eq!(findings(&committed), expected);
+}
+
+#[test]
+fn rust_files_the_grammar_cannot_parse_cannot_be_judged() {
+    let mut rule = comment_rule(json!({ "language": "rust", "node": "line_comment" }));
+    rule["fixtures"] =
+        json!([{ "path": "src/a.rs", "content": "// c\n", "expect": { "line": 1, "column": 1 } }]);
+    let rule = policy(&[rule]);
+    let repo = tempfile::tempdir().unwrap();
+    let root = repo.path();
+    git(root, &["init", "-q"]);
+
+    write(root, "src/bad.rs", "fn f() {\n    let = 1;\n}\n");
+    git(root, &["add", "-A"]);
+    let error = run(cli(&["check"], &rule, root), 2);
+    assert!(
+        error.contains("[source/no-comments] src/bad.rs: cannot parse as Rust near 2:"),
+        "{error}"
+    );
+    fs::remove_file(root.join("src/bad.rs")).unwrap();
+    write(root, "src/ok.rs", "fn f() {}\n");
+    git(root, &["add", "-A"]);
+    assert_eq!(run(cli(&["check"], &rule, root), 0), "");
+
+    write(root, "src/a.ts", "// c\n");
+    git(root, &["add", "-A"]);
+    let error = run(cli(&["check"], &rule, root), 2);
+    assert!(
+        error.contains("src/a.ts: syntax rules for rust apply to .rs files; narrow the path scope"),
+        "{error}"
+    );
 }

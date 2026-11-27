@@ -25,6 +25,7 @@ pub struct Selector {
 #[serde(rename_all = "kebab-case")]
 enum LanguageName {
     Typescript,
+    Rust,
 }
 
 #[derive(Deserialize)]
@@ -54,10 +55,12 @@ enum Filter {
     Regex(Regex),
 }
 
+type Dialect = (&'static str, Language, &'static [&'static str]);
+
 /// The grammars a language name covers, with the file extensions each parses.
-fn dialects(language: LanguageName) -> [(&'static str, Language, &'static [&'static str]); 2] {
+fn dialects(language: LanguageName) -> Vec<Dialect> {
     match language {
-        LanguageName::Typescript => [
+        LanguageName::Typescript => vec![
             (
                 "TypeScript",
                 tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
@@ -69,6 +72,17 @@ fn dialects(language: LanguageName) -> [(&'static str, Language, &'static [&'sta
                 &[".tsx"],
             ),
         ],
+        LanguageName::Rust => vec![("Rust", tree_sitter_rust::LANGUAGE.into(), &[".rs"])],
+    }
+}
+
+impl LanguageName {
+    /// How messages name the language's grammars and the files they parse.
+    fn describe(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::Typescript => ("typescript", "TypeScript", ".ts, .mts, .cts and .tsx"),
+            Self::Rust => ("rust", "Rust", ".rs"),
+        }
     }
 }
 
@@ -79,6 +93,7 @@ fn known_kind(language: &Language, name: &str) -> bool {
 impl Selector {
     pub fn compile(self) -> Result<SyntaxMatcher> {
         let grammars = dialects(self.language);
+        let (_, family, _) = self.language.describe();
         let check_kind = |label: &str, name: &str| {
             if grammars
                 .iter()
@@ -87,7 +102,7 @@ impl Selector {
                 Ok(())
             } else {
                 Err(format!(
-                    "selector {label} {name:?} is not a named node kind in every TypeScript grammar"
+                    "selector {label} {name:?} is not a named node kind in every {family} grammar"
                 ))
             }
         };
@@ -108,7 +123,7 @@ impl Selector {
                         .any(|(_, language, _)| language.field_id_for_name(field).is_none())
                 {
                     return Err(format!(
-                        "selector inside.field {field:?} is not a field in every TypeScript grammar"
+                        "selector inside.field {field:?} is not a field in every {family} grammar"
                     ));
                 }
                 Some((kinds, field))
@@ -171,7 +186,12 @@ impl SyntaxMatcher {
             .into_iter()
             .find(|(_, _, extensions)| extensions.iter().any(|ext| path.ends_with(ext)))
             .map(|(name, language, _)| (name, language))
-            .ok_or("syntax rules for typescript apply to .ts, .mts, .cts and .tsx files; narrow the path scope")?;
+            .ok_or_else(|| {
+                let (language, _, extensions) = self.language.describe();
+                format!(
+                    "syntax rules for {language} apply to {extensions} files; narrow the path scope"
+                )
+            })?;
         let mut parser = Parser::new();
         parser
             .set_language(&language)

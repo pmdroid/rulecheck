@@ -24,12 +24,12 @@ check_result() {
 }
 
 if [[ "$#" == 0 ]]; then
-  set -- literal regex path scope exclude rule-sources multi-scope path-globs syntax syntax-reuse
+  set -- literal regex path scope exclude rule-sources multi-scope path-globs syntax syntax-reuse syntax-rust
 fi
 
 for recipe in "$@"; do
   case "$recipe" in
-    literal|regex|path|scope|exclude|rule-sources|multi-scope|path-globs|syntax|syntax-reuse) ;;
+    literal|regex|path|scope|exclude|rule-sources|multi-scope|path-globs|syntax|syntax-reuse|syntax-rust) ;;
     *) printf 'Unknown cookbook recipe: %s\n' "$recipe" >&2; exit 2 ;;
   esac
   working="$demo/$recipe"
@@ -94,6 +94,11 @@ for recipe in "$@"; do
       printf 'export function first(xs: string[]): string {\n  return xs[0] ?? "";\n}\n' > "$working/src/first.ts"
       finding='src/first.ts:2:10: [source/no-non-null-assertion] Check for null or undefined instead of asserting with !.'
       ;;
+    syntax-rust)
+      # Doc comments, a SAFETY comment, a TODO and "//" in a string are all allowed.
+      printf '//! Totals for the report.\n\n/// Sums the values.\npub fn total(xs: &[i32]) -> i32 {\n    // TODO: overflow check\n    let sep = "// none";\n    let _ = sep;\n    xs.iter().sum()\n}\n\npub fn read(p: *const i32) -> i32 {\n    // SAFETY: callers pass a valid pointer.\n    unsafe { *p }\n}\n' > "$working/src/lib.rs"
+      finding='src/lib.rs:2:5: [source/no-rust-function-body-comments] Move the explanation out of the function body or into a name.'
+      ;;
   esac
 
   git -C "$working" add -f -- .
@@ -136,6 +141,7 @@ for recipe in "$@"; do
       ;;
     syntax) printf 'export function total(xs: number[]): number {\n  // add them up\n  return xs.reduce((a, b) => a + b, 0);\n}\n' > "$working/src/total.ts" ;;
     syntax-reuse) printf 'export function first(xs: string[]): string {\n  return xs[0]!;\n}\n' > "$working/src/first.ts" ;;
+    syntax-rust) printf 'pub fn total(xs: &[i32]) -> i32 {\n    // add them up\n    xs.iter().sum()\n}\n' > "$working/src/lib.rs" ;;
   esac
 
   check_result 1 "$finding" "$cli" check --root "$working" <<<"$policy"
