@@ -1,7 +1,8 @@
 name: Stage npm SDK
 
 on:
-  workflow_dispatch:
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -12,7 +13,10 @@ concurrency:
 
 jobs:
   stage:
-    if: github.repository == 'pmdroid/rulecheck' && github.ref == 'refs/heads/main'
+    if: >-
+      github.repository == 'pmdroid/rulecheck' &&
+      startsWith(github.ref, 'refs/tags/sdk-v') &&
+      !github.event.release.prerelease
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -22,11 +26,35 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24.22.3'
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
+      - name: Verify release tag and source
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^sdk-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Expected a stable SDK release tag, such as sdk-v0.1.1."
+            exit 1
+          fi
+          version=$(node -p 'require("./sdk/package.json").version')
+          if [[ "$RELEASE_TAG" != "sdk-v$version" ]]; then
+            echo "::error::The release tag does not match sdk/package.json."
+            exit 1
+          fi
+          if [[ "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" != "$(git rev-parse HEAD)" ]]; then
+            echo "::error::The release tag does not resolve to the event commit."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor HEAD refs/remotes/origin/main; then
+            echo "::error::The SDK release commit must be on main."
+            exit 1
+          fi
       - name: Pack and stage SDK
         shell: bash
         run: |
