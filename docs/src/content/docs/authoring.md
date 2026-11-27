@@ -53,14 +53,14 @@ selector: {
 }
 ```
 
-- `language` is `"typescript"`. Files ending in `.ts`, `.mts` or `.cts` are parsed with the TypeScript grammar and `.tsx` files with the TSX grammar. Any other file in scope can't be judged, so scope syntax rules to those extensions.
+- `language` is `"typescript"` or `"go"`. With `"typescript"`, files ending in `.ts`, `.mts` or `.cts` are parsed with the TypeScript grammar and `.tsx` files with the TSX grammar. With `"go"`, `.go` files are parsed with the Go grammar. Any other file in scope can't be judged, so scope syntax rules to the language's extensions.
 - `node` is a named node kind from the grammar, such as `comment`, `non_null_expression` or `call_expression`.
 - `inside` is optional. It keeps a node only when one of its ancestors has a kind in `kinds` (1 to 16 entries). With `field`, the node must also lie within that ancestor's `field` child. For example, `body` selects the function body and leaves out the parameters and return type.
 - `ignore` is optional. It drops a node whose source text contains a `literal` or matches a Rust `regex` (1 to 16 filters, each 1 to 4096 bytes). A dropped node doesn't hide a later one, so the next selected node is reported.
 
-Node kinds and fields are the grammar's own names, and the evaluator checks them against both the TypeScript and TSX grammars when it loads the policy. An unknown name, or one that only TSX has, such as `jsx_element`, exits 2 and names the rule. Rulecheck pins tree-sitter 0.27.2 and tree-sitter-typescript 0.23.2 exactly, because a grammar update can change which nodes a selector picks. A file in scope that doesn't parse without errors can't be judged: `check` exits 2 and names the file and position, and `test` reports that fixture as one that cannot be judged and exits 1.
+Node kinds and fields are the grammar's own names, and the evaluator checks them when it loads the policy: against both the TypeScript and TSX grammars for `"typescript"`, and against the Go grammar for `"go"`. An unknown name exits 2 and names the rule. So does one that only TSX has, such as `jsx_element`, or one from another language, such as `arrow_function` in a Go rule. To port a rule to another language, change `language` and swap in that grammar's kind names. The [Go recipe](../cookbook/#the-same-selector-on-go) does this for the comment rule. Rulecheck pins tree-sitter 0.27.2, tree-sitter-typescript 0.23.2 and tree-sitter-go 0.25.0 exactly, because a grammar update can change which nodes a selector picks. A file in scope that doesn't parse without errors can't be judged: `check` exits 2 and names the file and position, and `test` reports that fixture as one that cannot be judged and exits 1.
 
-Rulecheck releases from before syntax rules reject a policy that uses `kind: "syntax"` (exit 2). Update every evaluator that checks the repository, including the trusted base tools in CI, before you add one.
+Rulecheck releases from before syntax rules reject a policy that uses `kind: "syntax"` (exit 2), and releases from before Go support reject `language: "go"`. Update every evaluator that checks the repository, including the trusted base tools in CI, before you add one.
 
 ## Type-check rules in your repository
 

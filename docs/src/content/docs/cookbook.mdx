@@ -14,8 +14,9 @@ import multiScope from '../../../examples/rules/multi-scope.rule.ts?raw';
 import pathGlobs from '../../../examples/rules/path-globs.rule.ts?raw';
 import syntax from '../../../examples/rules/syntax.rule.ts?raw';
 import syntaxReuse from '../../../examples/rules/syntax-reuse.rule.ts?raw';
+import syntaxGo from '../../../examples/rules/syntax-go.rule.ts?raw';
 
-Rulecheck supports four matcher forms: **literal text**, **regex text**, **forbidden path**, and **syntax**. The first three recipes show the text and path forms, the middle recipes show how to control where a rule applies, and the [syntax recipes](#comments-in-function-bodies) select TypeScript and TSX syntax nodes. The code below comes from the same TypeScript files that CI runs. Copy a recipe into `.rulecheck/rules/` and adapt its ID, paths, and fixtures.
+Rulecheck supports four matcher forms: **literal text**, **regex text**, **forbidden path**, and **syntax**. The first three recipes show the text and path forms, the middle recipes show how to control where a rule applies, and the [syntax recipes](#comments-in-function-bodies) select TypeScript, TSX and Go syntax nodes. The code below comes from the same TypeScript files that CI runs. Copy a recipe into `.rulecheck/rules/` and adapt its ID, paths, and fixtures.
 
 From the repository root after building the CLI:
 
@@ -23,6 +24,7 @@ From the repository root after building the CLI:
 bash docs/examples/run.sh             # all recipes
 bash docs/examples/run.sh path-globs  # one recipe
 bash docs/examples/run.sh syntax      # the TypeScript/TSX comment selector
+bash docs/examples/run.sh syntax-go   # the same selector on Go
 ```
 
 ## Literal text
@@ -112,3 +114,17 @@ The selector is data. This second rule keeps the same `inside` value and changes
 ```text
 src/first.ts:2:10: [source/no-non-null-assertion] Check for null or undefined instead of asserting with !.
 ```
+
+## The same selector on Go
+
+`language: "go"` takes the same selector fields. This rule ports the [function-body comment rule](#comments-in-function-bodies) to Go. Only the language, the grammar's function kinds (`function_declaration`, `method_declaration` and `func_literal`) and the directive spellings change. A Go block includes its braces, so a comment on the first or last line of a body is inside `body`. Package and doc comments, a `//go:noinline` above a function, parameter and result comments, and struct field comments are outside every body, so they pass. `//` inside an interpreted string, a raw string or a rune isn't a comment node. The `ignore` filters drop `//nolint`, `//lint:ignore`, `// #nosec`, `//go:` and `//line` directives, plus `TODO` and `FIXME` notes.
+
+<Code code={syntaxGo} lang="ts" title="syntax-go.rule.ts" />
+
+The runner checks a clean checkout first. It has a package comment, a doc comment with `//go:noinline`, a `TODO`, a trailing `//nolint` and a string holding `//`. Then it adds a comment inside `Total` and expects:
+
+```text
+src/total.go:4:2: [source/no-go-function-body-comments] Move the explanation out of the function body or into a name.
+```
+
+Go is indented with tabs, and a tab counts as one column.
