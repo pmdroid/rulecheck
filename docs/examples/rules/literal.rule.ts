@@ -1,4 +1,4 @@
-import { defineRule } from "@rulecheck/sdk";
+import { defineRule } from "@pmdroid/rulecheck";
 
 export default defineRule({
   id: "config/no-legacy-spelling",

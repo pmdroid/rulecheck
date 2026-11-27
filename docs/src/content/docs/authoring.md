@@ -64,27 +64,18 @@ Rulecheck releases from before syntax rules reject a policy that uses `kind: "sy
 
 ## Type-check rules in your repository
 
-In the Rulecheck checkout, `npm run typecheck` checks only Rulecheck's own rules and cookbook examples. Don't pass file names to it: `tsc` then ignores the project config and writes `.rule.js` files beside your rules. To check the rules of another repository against the SDK types, run the installed TypeScript with a throwaway config from that repository's root:
+In the Rulecheck checkout, `npm run typecheck` checks the bundled rules and examples. In your own repository, install the SDK and TypeScript:
 
 ```bash
-rulecheck_home=~/.local/share/rulecheck  # your Rulecheck install
-config="$(mktemp -d)/tsconfig.json"
-cat > "$config" <<EOF
-{
-  "compilerOptions": {
-    "strict": true,
-    "noEmit": true,
-    "types": [],
-    "paths": { "@rulecheck/sdk": ["$rulecheck_home/sdk/index.d.ts"] }
-  },
-  "include": ["$PWD/.rulecheck/rules/**/*.rule.ts"]
-}
-EOF
-"$rulecheck_home/node_modules/.bin/tsc" -p "$config"
+npm install -D @pmdroid/rulecheck typescript
 ```
+
+Add `.rulecheck/rules/**/*.rule.ts` to your TypeScript project's `include` and run
+`npx tsc --noEmit`. No path alias or Rulecheck source checkout is needed for type checking.
+Use a Rulecheck CLI version that recognizes the new package name before updating existing rules.
 
 A typo such as `col` instead of `column` then fails with `TS2353` at the rule file and line. Without the type check, `rulecheck validate` still exits 2, but the error points at a position in the generated policy JSON.
 
-Rule files import `defineRule` from `@rulecheck/sdk` and export one `defineRule({...})` declaration. The builder accepts literals, arrays, objects with explicit keys, and references to earlier literal constants. It does not execute TypeScript modules. `rulecheck` pipes the versioned JSON from the builder to the evaluator; there is no generated policy file to commit.
+Rule files import `defineRule` from `@pmdroid/rulecheck` and export one `defineRule({...})` declaration. The builder still accepts the legacy `@rulecheck/sdk` marker for existing rules. The builder accepts literals, arrays, objects with explicit keys, and references to earlier literal constants. It does not execute TypeScript modules. `rulecheck` pipes the versioned JSON from the builder to the evaluator; there is no generated policy file to commit.
 
 To retire a rule, remove the rule source in a reviewed change and document what replaced it or why it no longer applies. The shadow workflow still checks the candidate against base policy, even when proposed policy removes a rule. Retire an obsolete rule separately rather than weakening it to get another change through.
