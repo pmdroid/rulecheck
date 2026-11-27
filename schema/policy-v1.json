@@ -87,12 +87,12 @@
       }
     },
     "selector": {
-      "description": "Selects nodes of one named tree-sitter node kind. typescript parses .ts, .mts and .cts files with the TypeScript grammar and .tsx files with the TSX grammar. Rulecheck checks node kinds and fields against both grammars.",
+      "description": "Selects nodes of one named tree-sitter node kind. typescript parses .ts, .mts and .cts files with the TypeScript grammar and .tsx files with the TSX grammar, and Rulecheck checks node kinds and fields against both. go parses .go files with the Go grammar.",
       "type": "object",
       "required": ["language", "node"],
       "additionalProperties": false,
       "properties": {
-        "language": { "enum": ["typescript"] },
+        "language": { "enum": ["typescript", "go"] },
         "node": { "type": "string", "minLength": 1, "maxLength": 128 },
         "inside": {
           "type": "object",

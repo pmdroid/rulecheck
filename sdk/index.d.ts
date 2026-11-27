@@ -5,11 +5,12 @@ export interface Location {
 
 /**
  * Selects nodes of one tree-sitter node kind. "typescript" parses .ts, .mts and .cts files
- * with the TypeScript grammar and .tsx files with the TSX grammar. Names are the grammar's
- * named node kinds and fields, checked when the policy loads.
+ * with the TypeScript grammar and .tsx files with the TSX grammar. "go" parses .go files with
+ * the Go grammar. Names are the grammar's named node kinds and fields,
+ * checked when the policy loads.
  */
 export interface Selector {
-  language: "typescript";
+  language: "typescript" | "go";
   /** Named node kind to report, such as "comment". */
   node: string;
   /**

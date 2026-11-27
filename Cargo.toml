@@ -14,6 +14,7 @@ serde_json = "1"
 sha2 = "0.10"
 # Parser and grammar are pinned exactly: a grammar change can move syntax findings.
 tree-sitter = "=0.27.2"
+tree-sitter-go = "=0.25.0"
 tree-sitter-typescript = "=0.23.2"
 
 [dev-dependencies]

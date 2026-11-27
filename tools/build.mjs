@@ -211,7 +211,7 @@ function checkShape(rule, fail) {
     expect(rule, "selector", "rule", isObject, "a selector object");
     const selector = rule.selector;
     fields(selector, "the selector", ["language", "node", "inside", "ignore"], ["language", "node"]);
-    expect(selector, "language", "selector", (value) => value === "typescript", '"typescript"');
+    expect(selector, "language", "selector", (value) => ["typescript", "go"].includes(value), '"typescript" or "go"');
     expect(selector, "node", "selector", (value) => typeof value === "string", "a node kind string");
     if (Object.hasOwn(selector, "inside")) {
       expect(selector, "inside", "selector", isObject, "an object { kinds, field }");
