@@ -14,8 +14,9 @@ import multiScope from '../../../examples/rules/multi-scope.rule.ts?raw';
 import pathGlobs from '../../../examples/rules/path-globs.rule.ts?raw';
 import syntax from '../../../examples/rules/syntax.rule.ts?raw';
 import syntaxReuse from '../../../examples/rules/syntax-reuse.rule.ts?raw';
+import syntaxRust from '../../../examples/rules/syntax-rust.rule.ts?raw';
 
-Rulecheck supports four matcher forms: **literal text**, **regex text**, **forbidden path**, and **syntax**. The first three recipes show the text and path forms, the middle recipes show how to control where a rule applies, and the [syntax recipes](#comments-in-function-bodies) select TypeScript and TSX syntax nodes. The code below comes from the same TypeScript files that CI runs. Copy a recipe into `.rulecheck/rules/` and adapt its ID, paths, and fixtures.
+Rulecheck supports four matcher forms: **literal text**, **regex text**, **forbidden path**, and **syntax**. The first three recipes show the text and path forms, the middle recipes show how to control where a rule applies, and the [syntax recipes](#comments-in-function-bodies) select TypeScript, TSX and Rust syntax nodes. The code below comes from the same TypeScript files that CI runs. Copy a recipe into `.rulecheck/rules/` and adapt its ID, paths, and fixtures.
 
 From the repository root after building the CLI:
 
@@ -23,6 +24,7 @@ From the repository root after building the CLI:
 bash docs/examples/run.sh             # all recipes
 bash docs/examples/run.sh path-globs  # one recipe
 bash docs/examples/run.sh syntax      # the TypeScript/TSX comment selector
+bash docs/examples/run.sh syntax-rust # the same selector over Rust
 ```
 
 ## Literal text
@@ -111,4 +113,18 @@ The selector is data. This second rule keeps the same `inside` value and changes
 
 ```text
 src/first.ts:2:10: [source/no-non-null-assertion] Check for null or undefined instead of asserting with !.
+```
+
+## Comments in Rust function bodies
+
+The same selector works on Rust with `language: "rust"`, which parses `.rs` files. This rule reports a `//` comment anywhere inside the body of a function, method or closure, including nested blocks, `match` arms and macro arguments such as `vec![...]`. A comment in a return type, a parameter list or at the top level isn't in a body, so it passes, and so do `//!` and `///` docs on the item. `//` inside a string or raw string isn't a comment node. The `ignore` filters keep `// SAFETY:` comments, which Clippy's `undocumented_unsafe_blocks` lint asks for, and `TODO` and `FIXME` notes.
+
+<Code code={syntaxRust} lang="ts" title="syntax-rust.rule.ts" />
+
+The Rust grammar has two comment kinds: `line_comment` for `//`, `///` and `//!`, and `block_comment` for `/* */`. This rule selects `line_comment`, so a `/* */` in a body passes, as its last in-scope fixture shows. To report block comments too, add a second rule with `node: "block_comment"` and the same `inside`.
+
+The runner checks a clean `src/lib.rs` first. It has crate and item docs, a `TODO`, `"// none"` in a string, and a `SAFETY` comment. Then it adds a comment inside `total` and expects:
+
+```text
+src/lib.rs:2:5: [source/no-rust-function-body-comments] Move the explanation out of the function body or into a name.
 ```
