@@ -24,12 +24,12 @@ check_result() {
 }
 
 if [[ "$#" == 0 ]]; then
-  set -- literal regex path scope exclude rule-sources multi-scope path-globs
+  set -- literal regex path scope exclude rule-sources multi-scope path-globs syntax syntax-reuse
 fi
 
 for recipe in "$@"; do
   case "$recipe" in
-    literal|regex|path|scope|exclude|rule-sources|multi-scope|path-globs) ;;
+    literal|regex|path|scope|exclude|rule-sources|multi-scope|path-globs|syntax|syntax-reuse) ;;
     *) printf 'Unknown cookbook recipe: %s\n' "$recipe" >&2; exit 2 ;;
   esac
   working="$demo/$recipe"
@@ -84,6 +84,16 @@ for recipe in "$@"; do
       touch "$working/examples/docker-compose.override.yml"
       finding=$'config/private-2b.toml:1:1: [config/no-machine-specific-files] Keep machine-specific files out of Git.\nconfig/team/local-1a.toml:1:1: [config/no-machine-specific-files] Keep machine-specific files out of Git.\ndocker-compose.override.yml:1:1: [config/no-machine-specific-files] Keep machine-specific files out of Git.'
       ;;
+    syntax)
+      # Comments outside function bodies, a TODO, and JSX text are all allowed.
+      printf '// Totals for the report.\nexport function total(xs: number[]): number {\n  // TODO: use reduce\n  let sum = 0;\n  for (const x of xs) sum += x;\n  return sum;\n}\n' > "$working/src/total.ts"
+      printf 'export const Hint = () => <p>// type a path</p>;\n' > "$working/src/hint.tsx"
+      finding='src/total.ts:2:3: [source/no-function-body-comments] Move the explanation out of the function body or into a name.'
+      ;;
+    syntax-reuse)
+      printf 'export function first(xs: string[]): string {\n  return xs[0] ?? "";\n}\n' > "$working/src/first.ts"
+      finding='src/first.ts:2:10: [source/no-non-null-assertion] Check for null or undefined instead of asserting with !.'
+      ;;
   esac
 
   git -C "$working" add -f -- .
@@ -124,6 +134,8 @@ for recipe in "$@"; do
       touch "$working/docker-compose.override.yml" "$working/config/private-2b.toml" "$working/config/team/local-1a.toml"
       git -C "$working" add -f -- docker-compose.override.yml config/private-2b.toml config/team/local-1a.toml
       ;;
+    syntax) printf 'export function total(xs: number[]): number {\n  // add them up\n  return xs.reduce((a, b) => a + b, 0);\n}\n' > "$working/src/total.ts" ;;
+    syntax-reuse) printf 'export function first(xs: string[]): string {\n  return xs[0]!;\n}\n' > "$working/src/first.ts" ;;
   esac
 
   check_result 1 "$finding" "$cli" check --root "$working" <<<"$policy"

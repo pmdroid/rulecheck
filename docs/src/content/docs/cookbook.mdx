@@ -1,6 +1,6 @@
 ---
 title: Rule cookbook
-description: Copyable, tested examples for every Rulecheck v1 matcher and common scope options.
+description: Copyable, tested examples for every Rulecheck matcher and common scope options.
 ---
 
 import { Code } from '@astrojs/starlight/components';
@@ -12,14 +12,17 @@ import exclude from '../../../examples/rules/exclude.rule.ts?raw';
 import ruleSources from '../../../examples/rules/rule-sources.rule.ts?raw';
 import multiScope from '../../../examples/rules/multi-scope.rule.ts?raw';
 import pathGlobs from '../../../examples/rules/path-globs.rule.ts?raw';
+import syntax from '../../../examples/rules/syntax.rule.ts?raw';
+import syntaxReuse from '../../../examples/rules/syntax-reuse.rule.ts?raw';
 
-Rulecheck v1 supports three matcher forms: **literal text**, **regex text**, and **forbidden path**. The first three recipes show those forms; the remaining recipes show how to control where they apply. The code below comes from the same TypeScript files that CI runs. Copy a recipe into `.rulecheck/rules/` and adapt its ID, paths, and fixtures.
+Rulecheck supports four matcher forms: **literal text**, **regex text**, **forbidden path**, and **syntax**. The first three recipes show the text and path forms, the middle recipes show how to control where a rule applies, and the [syntax recipes](#comments-in-function-bodies) select TypeScript and TSX syntax nodes. The code below comes from the same TypeScript files that CI runs. Copy a recipe into `.rulecheck/rules/` and adapt its ID, paths, and fixtures.
 
 From the repository root after building the CLI:
 
 ```sh
 bash docs/examples/run.sh             # all recipes
 bash docs/examples/run.sh path-globs  # one recipe
+bash docs/examples/run.sh syntax      # the TypeScript/TSX comment selector
 ```
 
 ## Literal text
@@ -84,4 +87,28 @@ Use `expect: null` for a clean or out-of-scope example, or an exact `{ line, col
 
 One finding per rule per file, at the first match, is the v1 contract for `check` and its JSON output. Fix that match and run the check again to see the next one. Reporting every match would change finding counts, so it is reserved for a later flag or contract version.
 
-These matchers do not parse an AST or understand whether text is inside a comment or a string. Use a language-aware linter or test for those checks.
+Text and forbidden-path matchers do not parse an AST or understand whether text is inside a comment or a string. Use a syntax rule when the difference matters.
+
+## Comments in function bodies
+
+A `syntax` rule parses each file in scope and reports the first node that its `selector` picks. This rule reports a comment anywhere inside a function body, including nested blocks, callbacks, class methods and JSX. A comment in a return type, a parameter list or at the top level isn't in a body, so it passes. `//` or `/* */` inside a string, template literal, regex literal or JSX text isn't a comment node, so it passes too. The `ignore` filters drop tool directives such as `// eslint-disable-next-line` and `// @ts-expect-error`, plus `TODO` and `FIXME` notes.
+
+<Code code={syntax} lang="ts" title="syntax.rule.ts" />
+
+The runner checks a clean checkout first. It has a file header comment, a `TODO` in a function body, and JSX text that starts with `//`. Then it adds a comment inside `total` and expects:
+
+```text
+src/total.ts:2:3: [source/no-function-body-comments] Move the explanation out of the function body or into a name.
+```
+
+A text regex for comment lines would also report the header, the `TODO` and a `//` line inside a template literal, and it would miss a trailing `return 1; // why`. The [syntax rule reference](../authoring/#syntax-rules) lists the selector fields and when a file cannot be judged.
+
+## Reuse a selector
+
+The selector is data. This second rule keeps the same `inside` value and changes only `node`, so it reports `!` non-null assertions in function bodies without an evaluator change. `a !== b`, `!a` and a `!` in a comment or string are not `non_null_expression` nodes.
+
+<Code code={syntaxReuse} lang="ts" title="syntax-reuse.rule.ts" />
+
+```text
+src/first.ts:2:10: [source/no-non-null-assertion] Check for null or undefined instead of asserting with !.
+```

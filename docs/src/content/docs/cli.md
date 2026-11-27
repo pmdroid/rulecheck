@@ -20,7 +20,7 @@ The installed `rulecheck` command builds policy from `.rulecheck/rules/**/*.rule
 | --- | --- |
 | 0 | Successful command; no violations or fixture mismatches. |
 | 1 | One or more findings or fixture mismatches. |
-| 2 | Could not judge, such as an invalid rule file, a builder failure, unreadable text, or a text rule matching no files. |
+| 2 | Could not judge, such as an invalid rule file, a builder failure, unreadable text, a file in a syntax rule's scope that doesn't parse, or a text or syntax rule matching no files. |
 
 Findings and fixture mismatches go to stdout, one per line. Exit 2 diagnostics go to stderr. `validate` prints nothing on success, and `test` prints a count such as `4 fixtures passed`. Running `rulecheck` with no command prints the usage to stderr and exits 2, so a script that drops its command never reads as clean.
 
@@ -31,7 +31,7 @@ rulecheck build: .rulecheck/rules/demo.rule.ts:16:26: Unknown property col in fi
 rulecheck: could not build policy from /path/to/checkout/.rulecheck/rules
 ```
 
-The evaluator still checks limits, rule IDs, globs, and regex syntax. Those messages name the rule ID, such as `[config/no-legacy-mode] invalid regex: …`.
+The evaluator still checks limits, rule IDs, globs, regex syntax, and syntax selector node kinds and fields. Those messages name the rule ID, such as `[config/no-legacy-mode] invalid regex: …`.
 
 `--commit` takes a full 40- or 64-character SHA. A short SHA or `HEAD` is an argument error: it exits 2 with one usage line and, with `--format json`, no result document. Resolve it first:
 

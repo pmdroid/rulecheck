@@ -40,6 +40,28 @@ Matching ignores `provenance`. A rule finds the same files and lines with or wit
 
 Rulecheck releases from before `provenance` reject a policy that uses it as an unknown field (exit 2). Before you add it, make sure every evaluator that checks the repository, including the trusted base tools in CI, is a release that supports it.
 
+## Syntax rules
+
+A rule with `kind: "syntax"` takes a `selector` instead of a `pattern`. Rulecheck parses each file in scope and reports the first selected node in document order, with the same one finding per rule per file as text rules. Fixtures need `content`, as text fixtures do. The [cookbook](../cookbook/#comments-in-function-bodies) has a tested example.
+
+```ts
+selector: {
+  language: "typescript",
+  node: "comment",
+  inside: { kinds: ["function_declaration", "arrow_function", "method_definition"], field: "body" },
+  ignore: [{ kind: "regex", value: "\\b(?:TODO|FIXME)\\b" }],
+}
+```
+
+- `language` is `"typescript"`. Files ending in `.ts`, `.mts` or `.cts` are parsed with the TypeScript grammar and `.tsx` files with the TSX grammar. Any other file in scope can't be judged, so scope syntax rules to those extensions.
+- `node` is a named node kind from the grammar, such as `comment`, `non_null_expression` or `call_expression`.
+- `inside` is optional. It keeps a node only when one of its ancestors has a kind in `kinds` (1 to 16 entries). With `field`, the node must also lie within that ancestor's `field` child. For example, `body` selects the function body and leaves out the parameters and return type.
+- `ignore` is optional. It drops a node whose source text contains a `literal` or matches a Rust `regex` (1 to 16 filters, each 1 to 4096 bytes). A dropped node doesn't hide a later one, so the next selected node is reported.
+
+Node kinds and fields are the grammar's own names, and the evaluator checks them against both the TypeScript and TSX grammars when it loads the policy. An unknown name, or one that only TSX has, such as `jsx_element`, exits 2 and names the rule. Rulecheck pins tree-sitter 0.27.2 and tree-sitter-typescript 0.23.2 exactly, because a grammar update can change which nodes a selector picks. A file in scope that doesn't parse without errors can't be judged: `check` exits 2 and names the file and position, and `test` reports that fixture as one that cannot be judged and exits 1.
+
+Rulecheck releases from before syntax rules reject a policy that uses `kind: "syntax"` (exit 2). Update every evaluator that checks the repository, including the trusted base tools in CI, before you add one.
+
 ## Type-check rules in your repository
 
 In the Rulecheck checkout, `npm run typecheck` checks only Rulecheck's own rules and cookbook examples. Don't pass file names to it: `tsc` then ignores the project config and writes `.rule.js` files beside your rules. To check the rules of another repository against the SDK types, run the installed TypeScript with a throwaway config from that repository's root:
