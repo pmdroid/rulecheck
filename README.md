@@ -2,7 +2,9 @@
 
 Rulecheck reads TypeScript rules as data and checks repository files for forbidden text, paths, or TypeScript and TSX syntax. The installed `rulecheck` command finds `.rulecheck/rules/**/*.rule.ts` in the checkout, has the builder parse them as static data, and streams the policy straight into the Rust evaluator. No policy file is written. Rule modules are never imported or executed.
 
-## Install once
+## Install the CLI
+
+The npm package `@pmdroid/rulecheck` is the TypeScript authoring SDK, not the CLI. The full CLI currently installs from the GitHub checkout below. The Rust crate is not on crates.io yet.
 
 Install Git, Node.js 20 or later with npm, and [Rust via rustup](https://rustup.rs/). On Linux or macOS, clone Rulecheck into a directory of its own, install its pinned dependencies, build the release evaluator, and link the shipped entry point into a directory on your `PATH`:
 
@@ -53,6 +55,8 @@ cd - && rm -r -- "$demo"
 Run from the checkout root, or pass `--root DIR` from anywhere else. A subdirectory is rejected.
 
 ## Author and run rules
+
+For editor types in another project, install `npm install -D @pmdroid/rulecheck typescript` and include `.rulecheck/rules/**/*.rule.ts` in that project’s TypeScript configuration. The CLI still auto-compiles the static rule files with its own pinned TypeScript.
 
 Copy the [example rule](.rulecheck/rules/no-legacy-mode.rule.ts) to create a rule. The builder discovers `.rulecheck/rules/**/*.rule.ts` in path order. Each file starts with `import { defineRule } from "@pmdroid/rulecheck"` (older rules can still use `@rulecheck/sdk`) and ends with one `export default defineRule({...})`. Values can be literals, arrays, objects with explicit keys, and references to earlier literal `const` declarations. Keep runtime code outside rule files. `npm run typecheck` in the Rulecheck checkout checks only Rulecheck's own rules. To type-check another repository's rules, install the SDK as shown in the [authoring guide](docs/src/content/docs/authoring.md#type-check-rules-in-your-repository). `rulecheck test` checks fixture `content` at the fixture `path` without reading the working tree, so an out-of-scope fixture `path` with `expect: null` proves the scope.
 
@@ -112,6 +116,8 @@ npm run typecheck
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features
+cargo build --locked
+node --test tests/cookbook.test.mjs
 ```
 
 ## Documentation
@@ -124,5 +130,4 @@ npm run build --prefix docs
 npm run preview --prefix docs
 ```
 
-Run the cookbook recipes after building the CLI: `bash docs/examples/run.sh`.
 Set `RULECHECK_DOCS_SITE` to the intended site origin and `RULECHECK_DOCS_BASE` to its path prefix when building for a subpath. The build output is in `docs/dist/`.

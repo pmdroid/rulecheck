@@ -18,14 +18,14 @@ import syntaxRust from '../../../examples/rules/syntax-rust.rule.ts?raw';
 
 Rulecheck supports four matcher forms: **literal text**, **regex text**, **forbidden path**, and **syntax**. The first three recipes show the text and path forms, the middle recipes show how to control where a rule applies, and the [syntax recipes](#comments-in-function-bodies) select TypeScript, TSX and Rust syntax nodes. The code below comes from the same TypeScript files that CI runs. Copy a recipe into `.rulecheck/rules/` and adapt its ID, paths, and fixtures.
 
-From the repository root after building the CLI:
+From your project's Git checkout root, run the installed CLI after copying and adapting a rule:
 
 ```sh
-bash docs/examples/run.sh             # all recipes
-bash docs/examples/run.sh path-globs  # one recipe
-bash docs/examples/run.sh syntax      # the TypeScript/TSX comment selector
-bash docs/examples/run.sh syntax-rust # the same selector over Rust
+rulecheck test    # run the examples in the rule's fixtures
+rulecheck check   # check the working-tree contents of tracked files
 ```
+
+Use `git add` to stage new target files before checking them, or run `rulecheck check --untracked` to include non-ignored untracked files.
 
 ## Literal text
 

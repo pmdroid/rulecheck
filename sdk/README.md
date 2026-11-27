@@ -1,13 +1,17 @@
 # Rulecheck SDK
 
 ```sh
-npm install -D @pmdroid/rulecheck
+npm install -D @pmdroid/rulecheck typescript
 ```
 
 Use `import { defineRule } from "@pmdroid/rulecheck"` in a `.rule.ts` file.
 This package provides authoring types and a small identity helper. It does not install
 the Rust evaluator or the CLI. [See the Rulecheck repository](https://github.com/pmdroid/rulecheck)
-for CLI setup and rule examples.
+for CLI setup and the [rule cookbook](https://github.com/pmdroid/rulecheck/blob/main/docs/src/content/docs/cookbook.mdx).
+Include `.rulecheck/rules/**/*.rule.ts` in your TypeScript project's `include`, then run
+`npx tsc --noEmit` to check the types. To evaluate rules and run their fixtures, use the
+separately installed CLI: `rulecheck check` and `rulecheck test`. Rule modules are parsed
+as data, not executed, and no policy JSON file needs to be generated or committed.
 
 ## Releases
 
