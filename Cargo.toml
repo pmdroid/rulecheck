@@ -4,10 +4,11 @@ version = "0.1.0"
 edition = "2024"
 default-run = "rulecheck"
 description = "Deterministic repository checks for TypeScript-authored rules"
+license = "MIT"
 repository = "https://github.com/pmdroid/rulecheck"
 homepage = "https://github.com/pmdroid/rulecheck"
 readme = "README.md"
-publish = false
+publish = ["crates-io"]
 exclude = ["/docs/"]
 
 [[bin]]
