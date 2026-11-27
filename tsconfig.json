@@ -3,6 +3,7 @@
     "strict": true,
     "noEmit": true,
     "paths": {
+      "@pmdroid/rulecheck": ["./sdk/index.d.ts"],
       "@rulecheck/sdk": ["./sdk/index.d.ts"]
     }
   },

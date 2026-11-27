@@ -1,0 +1,24 @@
+{
+  "name": "@pmdroid/rulecheck",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for authoring Rulecheck policies",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pmdroid/rulecheck.git",
+    "directory": "sdk"
+  },
+  "type": "module",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "files": ["index.d.ts", "index.js"],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}

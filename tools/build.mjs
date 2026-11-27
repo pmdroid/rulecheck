@@ -7,7 +7,8 @@ const maxSource = 128 * 1024;
 const maxPolicy = 1024 * 1024;
 const maxRules = 128;
 const maxEntries = 20_000;
-const marker = "@rulecheck/sdk";
+const marker = "@pmdroid/rulecheck";
+const sdkMarkers = new Set([marker, "@rulecheck/sdk"]);
 const rulesDir = ".rulecheck/rules";
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 const FULL_SHA = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i;
@@ -322,7 +323,7 @@ function parse(path, source) {
   const imported = named && ts.isNamedImports(named) && named.elements;
   if (!imported || imported.length !== 1 || imported[0].name.text !== "defineRule"
       || imported[0].propertyName || imported[0].isTypeOnly || clause.isTypeOnly || clause.name
-      || first.attributes || !ts.isStringLiteral(first.moduleSpecifier) || first.moduleSpecifier.text !== marker) {
+      || first.attributes || !ts.isStringLiteral(first.moduleSpecifier) || !sdkMarkers.has(first.moduleSpecifier.text)) {
     reject(first?.getStart(file) ?? 0, "Expected the SDK marker import", `Start with import { defineRule } from "${marker}".`);
   }
 

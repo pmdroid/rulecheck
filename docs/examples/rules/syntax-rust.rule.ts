@@ -1,4 +1,4 @@
-import { defineRule } from "@rulecheck/sdk";
+import { defineRule } from "@pmdroid/rulecheck";
 
 // Rust items and closures whose `body` field holds the function body. A
 // comment counts when it sits anywhere inside that body, including nested

@@ -1,4 +1,4 @@
-import { defineRule } from "@rulecheck/sdk";
+import { defineRule } from "@pmdroid/rulecheck";
 
 // The same function-body selector as the comment recipe, with a different
 // node kind. No evaluator change is needed for a new syntax rule.
