@@ -13,7 +13,9 @@ use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
 const ROOT: &str = env!("CARGO_MANIFEST_DIR");
-const EXAMPLE: &str = include_str!("../.rulecheck/rules/no-legacy-mode.rule.ts");
+// Provenance tests edit the frozen literal rule, so builder positions and the
+// fixture count stay stable while the live rule changes.
+const EXAMPLE: &str = include_str!("fixtures/literal-no-legacy-mode.rule.ts");
 const FINDING: &str = "https://github.com/pmdroid/rulecheck/pull/1#discussion_r1";
 
 fn cli(args: &[&str], policy: &[u8], root: &Path) -> Output {
@@ -390,7 +392,8 @@ fn commit_mode_reads_only_the_commit_tree() {
 fn rule_sources_are_candidates_unless_excluded() {
     let repo = repo();
     let root = repo.path();
-    let source = include_str!("../.rulecheck/rules/no-legacy-mode.rule.ts")
+    // The frozen literal rule matches its own pattern text in the rule source.
+    let source = include_str!("fixtures/literal-no-legacy-mode.rule.ts")
         .replace("[\"config/*.toml\"]", "[\"config/*.toml\", \"**/*.ts\"]");
     assert!(source.contains("\"**/*.ts\""));
     write(root, ".rulecheck/rules/demo.rule.ts", &source);
