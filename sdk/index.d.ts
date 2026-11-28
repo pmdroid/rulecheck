@@ -5,12 +5,13 @@ export interface Location {
 
 /**
  * Selects nodes of one tree-sitter node kind. "typescript" parses .ts, .mts and .cts files
- * with the TypeScript grammar and .tsx files with the TSX grammar. "rust" parses .rs files
- * with the Rust grammar. Names are the grammar's named node kinds and fields, checked when
- * the policy loads. Rust has no single comment kind: use "line_comment" or "block_comment".
+ * with the TypeScript grammar and .tsx files with the TSX grammar. "rust" parses .rs files,
+ * "go" parses .go files and "python" parses .py and .pyi files with that language's grammar.
+ * Names are the grammar's named node kinds and fields, checked when the policy loads. Rust has
+ * no single comment kind: use "line_comment" or "block_comment".
  */
 export interface Selector {
-  language: "typescript" | "rust";
+  language: "typescript" | "rust" | "go" | "python";
   /** Named node kind to report, such as "comment". */
   node: string;
   /**
