@@ -151,8 +151,8 @@ The contract:
 - `resultVersion` is 1. It versions this document separately from the policy `version`. Reject a version you don't know.
 - `exitCode` always equals the process exit status, and `outcome` names it: `pass` (0), `violation` (1) or `error` (2).
 - Findings are sorted by path, then line and column, then rule ID. `line` and `column` are the one-based values from human output, with columns counted in Unicode scalar values. `byteStart` and `byteEnd` are the zero-based, half-open UTF-8 byte range of the match, so `file[byteStart..byteEnd]` is the matched text. By default that is the rule's first match in the file; with `--all-matches` there is one finding per match. Forbidden-path findings have no text and report `null` for both.
-- `diagnostics` lists each reason the check could not judge, as `{ ruleId, message }`. `ruleId` is set for an empty text scope and `null` otherwise. Any diagnostic makes the outcome `error`.
-- After an empty text scope, the findings for the other rules are complete and still listed. When a scan stops early on an unreadable file or an input limit such as the per-file or findings cap, `findings` is empty. Never treat an `error` result as clean.
+- `diagnostics` lists each reason the check could not judge, as `{ ruleId, message }`. `ruleId` is set for an empty text scope, a forbidden-path rule with a [missing anchor](../cookbook/#forbidden-path-with-an-anchor) and a rule not evaluated before a budget stop, and each kind ends with one summary diagnostic with `ruleId: null`. Other errors have `ruleId: null` only. Any diagnostic makes the outcome `error`.
+- After an empty text scope or a missing anchor, the findings are complete and still listed. When a scan stops early on an unreadable file or an input limit such as the per-file or findings cap, `findings` is empty. Never treat an `error` result as clean.
 - When the scan stopped at the [text budget](#scan-budget), the result also has a `partial` object, and only then. `partial.reason` is `"text-budget"`. `textBudgetBytes` is the budget, `textBytesEvaluated` is the scoped text evaluated before the stop, `stoppedAt` is the file that didn't fit, and `unevaluatedRuleIds` lists, in policy order, the rules not evaluated on every file in scope. Each of those rules also has a diagnostic, and a final diagnostic with `ruleId: null` explains the stop. `findings` holds the findings from before the stop. The outcome is `error` and `exitCode` is 2, so a consumer that predates `partial` still treats the result as unjudged.
 - `policy.sha256` is the SHA-256 of the exact policy bytes the evaluator read. It is `null` when the policy could not be read. It differs from the shadow evidence's effective-policy digest, which hashes a canonical form. `policy.version` is `null` when the policy is invalid. `policy.ruleIds` lists the rules selected after `--id-prefix`.
 - `source.mode` is `commit` with the exact `--commit` SHA, or `working-tree` with `commit: null`. A working-tree scan includes unstaged edits, so no commit describes it exactly. `source.untracked` is `true` when `--untracked` was passed and absent otherwise, so results without the flag keep the shape shown above. `source.matches` is `"all"` when `--all-matches` was passed and absent otherwise. `source.textBudgetMiB` is the `--text-budget` value when it was passed and absent otherwise, which means 64.
@@ -187,7 +187,7 @@ Without `--commit`, the candidate files are the regular files in the Git index, 
 
 - Changes to tracked files are scanned without staging, including tracked files that match `.gitignore`.
 - Untracked files are not scanned, whether ignored or not. Run `git add` first, or pass `--untracked`.
-- A tracked file deleted from the working tree or the index is skipped. If that leaves a text rule with no files in scope, the check exits 2.
+- A tracked file deleted from the working tree or the index is skipped. If that leaves a text rule with no files in scope, the check exits 2. A deleted file doesn't count as a forbidden-path anchor either.
 - Git symlinks and submodules are skipped. A scoped path that is now a directory, FIFO, or other non-regular file, or that sits under a symlinked directory, exits 2.
 
 With `--untracked`, the candidates also include the untracked files that Git doesn't ignore, as listed by `git ls-files --others --exclude-standard`. They are checked the same way as index files:
@@ -198,6 +198,8 @@ With `--untracked`, the candidates also include the untracked files that Git doe
 - `--untracked` with `--commit` is a usage error (exit 2): a commit has no untracked files.
 
 With `--commit SHA`, the candidate files are the commit's tree, and the index and working tree are ignored. A scoped symlink or submodule exits 2.
+
+A forbidden-path rule with `anchors` also needs at least one candidate file that matches an anchor, or the check exits 2 for that rule. Anchors are matched against the same candidates in both modes, so a moved or deleted directory exits 2 in the working tree and at the exact commit. Anchors are only checked for presence: their text is not read and doesn't count toward the text budget, and they are still checked after a budget stop. A symlink can't be an anchor. The working tree skips it, so the anchor is missing, and `--commit` exits 2 for a scoped symlink. Without `anchors`, a forbidden-path rule that matches no file passes, as in every earlier release.
 
 ## Rule sources
 

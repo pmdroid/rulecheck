@@ -15,6 +15,7 @@ import thirdPartySet from '../../../examples/sets/third-party.set.ts?raw';
 import ruleSources from '../../../examples/rules/rule-sources.rule.ts?raw';
 import multiScope from '../../../examples/rules/multi-scope.rule.ts?raw';
 import pathGlobs from '../../../examples/rules/path-globs.rule.ts?raw';
+import pathAnchors from '../../../examples/rules/path-anchors.rule.ts?raw';
 import syntax from '../../../examples/rules/syntax.rule.ts?raw';
 import syntaxReuse from '../../../examples/rules/syntax-reuse.rule.ts?raw';
 import syntaxRust from '../../../examples/rules/syntax-rust.rule.ts?raw';
@@ -51,6 +52,29 @@ Match a line even when spacing varies. This example accepts optional whitespace 
 Stop a local-only path from entering Git. No `pattern` or fixture `content` is needed. A finding is always reported at line 1, column 1. No matching tracked regular file is a pass.
 
 <Code code={path} lang="ts" title="path.rule.ts" />
+
+## Forbidden path with an anchor
+
+A forbidden-path rule can't tell an absent file from an absent directory. If `services/billing/` is renamed, a rule for `services/billing/config/*.local.toml` keeps passing while the forbidden file lands at the new path. Add `anchors`: globs for files that always exist next to the forbidden ones. When the forbidden file is absent and an anchor exists, the check passes as before. When no file matches any anchor, the check can't judge the rule and exits 2.
+
+<Code code={pathAnchors} lang="ts" title="path-anchors.rule.ts" />
+
+The runner checks a clean checkout and then the forbidden file, as in the other recipes. Then it moves `services/billing` to `services/payments` and expects exit 2 from the working tree and from the exact commit, with no findings and this on stderr:
+
+```text
+[config/no-service-overrides] missing anchor: no file matches the rule's anchors, so the area it guards moved or vanished and an absent forbidden path proves nothing; restore the anchor or update anchors and paths together
+rulecheck: one or more forbidden-path rules found none of their anchors
+```
+
+Update `paths` and `anchors` together when you move the directory. Some rules have no natural anchor:
+
+- **Repository-root paths** such as `docker-compose.override.yml` in the [glob recipe](#exact-paths-and-advanced-globs). The root can't move, so there's nothing to anchor. Leave `anchors` out.
+- **Paths that are forbidden everywhere**, such as `**/*.pem` or `**/.env`. The rule guards no single directory, so an empty match is the clean result. Leave `anchors` out.
+- **A directory with no file that always exists.** Anchor the closest file that does, such as the package manifest one level up (`services/billing/package.json`). Don't add a placeholder file only to anchor the rule unless the team will keep it.
+
+An anchor must not match a fixture that expects a finding, because a forbidden file that is its own anchor could never pass. The builder and the evaluator reject `anchors` on text and syntax rules, which already exit 2 when no file is in their scope.
+
+`anchors` doesn't change the matcher digest, so a [baseline](../baselines/) recorded before you add it still applies. Rulecheck releases from before `anchors` reject a policy that uses it as an unknown field (exit 2). Before you add it, make sure every evaluator that checks the repository, including the trusted base tools in CI, is a release that supports it.
 
 ## Recursive scope and a negative control
 
