@@ -507,6 +507,7 @@ fn schema_sdk_and_evaluator_accept_the_same_rule_fields() {
         fields,
         [
             "anchors",
+            "consistency",
             "exclude",
             "excludeSets",
             "fixtures",
@@ -530,7 +531,17 @@ fn schema_sdk_and_evaluator_accept_the_same_rule_fields() {
     let fixture = &schema["$defs"]["fixture"]["properties"];
     let mut fixture: Vec<_> = fixture.as_object().unwrap().keys().cloned().collect();
     fixture.sort();
-    assert_eq!(fixture, ["content", "expect", "expectAll", "path"]);
+    assert_eq!(
+        fixture,
+        [
+            "content",
+            "expect",
+            "expectAll",
+            "expectFindings",
+            "files",
+            "path"
+        ]
+    );
     let provenance = &rule["properties"]["provenance"];
     assert_eq!(provenance["required"], json!(["finding"]));
     assert_eq!(provenance["additionalProperties"], json!(false));
@@ -569,6 +580,12 @@ fn schema_sdk_and_evaluator_accept_the_same_rule_fields() {
         "path: string; expect: Location | null",
         "{ path: string; content: string } & (",
         "{ expectAll: readonly Location[]; expect?: never }",
+        "kind: \"consistency\";",
+        "consistency: Consistency;",
+        "{ form: \"same-values\"; left: ConsistencyScope; right: ConsistencyScope }",
+        "{ form: \"path-exists\"; source: ConsistencyScope; base: \"root\" | \"file\" }",
+        "files: readonly { path: string; content?: string }[];",
+        "expectFindings: readonly { path: string; line: number; column: number }[];",
     ] {
         assert!(sdk.contains(field), "SDK is missing {field}");
     }

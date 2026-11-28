@@ -141,6 +141,18 @@ impl Template {
     }
 }
 
+/// A value for a generated message, escaped and cut like a captured group.
+pub fn shown(value: &str) -> String {
+    let mut out = String::new();
+    push_capture(&mut out, value);
+    out
+}
+
+/// A generated message, cut to `MAX_MESSAGE` bytes like a rendered template.
+pub fn capped(message: String) -> String {
+    cap(message)
+}
+
 /// The names Rulecheck accepts as references. Rust regex group names may also
 /// contain `.`, `[` and `]`; templates refuse those so a reference stays a plain word.
 fn valid_name(name: &str) -> bool {

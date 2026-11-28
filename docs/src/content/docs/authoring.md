@@ -191,6 +191,25 @@ How a message renders:
 - Rendering is a plain copy. Captured text that looks like a reference, `$1`, or regex syntax stays literal text, and neither the template nor the captured text is evaluated or compiled as a regex.
 
 `message` does not change what matches. Fixtures, `expectAll` and the baseline matcher digest are the same with or without it. Rules without `message` produce exactly the output they did before. Rulecheck releases from before `message` reject a policy that uses it as an unknown field (exit 2), so update every evaluator that checks the repository, including the trusted base tools in CI, before you add one.
+## Consistency rules
+
+A rule with `kind: "consistency"` takes a `consistency` block instead of a `pattern` or `selector` and relates files of its inventory (`paths`, `exclude` and `excludeSets`) to each other. `form: "same-values"` compares the values that two named scopes, `left` and `right`, extract. `form: "path-exists"` checks that every reference a `source` scope extracts names a regular file of the inventory, resolved from the repository root (`base: "root"`) or the referencing file's directory (`base: "file"`). Each scope has a `name`, its own `paths` and optional `exclude` inside the inventory, and an `extract` regex with exactly one capture group. The cookbook shows [both forms](../cookbook/#keep-two-files-in-step) with their normalization, traversal and limit rules.
+
+Fixtures for consistency rules list a synthetic inventory instead of one file:
+
+```ts
+fixtures: [
+  {
+    files: [
+      { path: "docs/flags.md", content: "- `beta_search`\n" },
+      { path: "config/flags/a.json", content: "{ \"beta_search\": true }\n" },
+    ],
+    expectFindings: [],
+  },
+],
+```
+
+Files in a scope need `content`; other files only need a `path`. `expectFindings` lists every finding as `{ path, line, column }`, ordered by path, then location. A fixture in which a scope matches no file fails, because the check could not judge it either. The baseline `matcher` digest includes the `consistency` block. Releases from before consistency rules reject `kind: "consistency"` (exit 2), so update every evaluator that checks the repository, including the trusted base tools in CI, before you add one.
 
 ## Syntax rules
 
