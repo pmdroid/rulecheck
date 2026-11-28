@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Rulecheck baseline v1",
+  "description": "Counts of existing findings by rule ID and repository path, written by rulecheck baseline and read by rulecheck check --baseline. Rulecheck also requires the canonical form it writes: keys sorted, two-space indent, one trailing newline. Rules and paths without findings are omitted.",
+  "type": "object",
+  "required": ["baselineVersion", "matches", "rules"],
+  "additionalProperties": false,
+  "properties": {
+    "baselineVersion": { "const": 1 },
+    "matches": { "const": "all", "description": "Counts are all-match counts; a first-match count cannot be ratcheted." },
+    "rules": {
+      "type": "object",
+      "description": "Keyed by rule ID.",
+      "additionalProperties": { "$ref": "#/$defs/rule" }
+    }
+  },
+  "$defs": {
+    "rule": {
+      "type": "object",
+      "required": ["matcher", "paths"],
+      "additionalProperties": false,
+      "properties": {
+        "matcher": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "Digest of the rule's kind, pattern and selector when the counts were recorded. A rule whose digest differs cannot use these counts." },
+        "paths": {
+          "type": "object",
+          "description": "Keyed by normalized, slash-separated repository-relative path.",
+          "minProperties": 1,
+          "additionalProperties": { "type": "integer", "minimum": 1, "maximum": 10000 }
+        }
+      }
+    }
+  }
+}

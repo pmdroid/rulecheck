@@ -79,12 +79,29 @@ fn check(root: &Value, schema: &Value, value: &Value, at: &str, errors: &mut Vec
                 }
             }
             "additionalProperties" => {
-                assert_eq!(rule, &Value::Bool(false));
-                let known = schema["properties"].as_object().unwrap();
-                for key in value.as_object().into_iter().flat_map(|o| o.keys()) {
-                    if !known.contains_key(key) {
-                        reasons.push(format!("unknown property {key:?}"));
+                let empty = serde_json::Map::new();
+                let known = schema
+                    .get("properties")
+                    .and_then(Value::as_object)
+                    .unwrap_or(&empty);
+                for (key, child) in value.as_object().into_iter().flatten() {
+                    if known.contains_key(key) {
+                        continue;
                     }
+                    match rule {
+                        Value::Bool(false) => reasons.push(format!("unknown property {key:?}")),
+                        Value::Object(_) => {
+                            check(root, rule, child, &format!("{at}.{key}"), errors)
+                        }
+                        other => panic!("unsupported additionalProperties {other}"),
+                    }
+                }
+            }
+            "minProperties" => {
+                if let Some(object) = value.as_object()
+                    && object.len() < rule.as_u64().unwrap() as usize
+                {
+                    reasons.push(format!("minProperties {rule}, found {}", object.len()));
                 }
             }
             "items" => {

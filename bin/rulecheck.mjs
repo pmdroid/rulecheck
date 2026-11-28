@@ -20,8 +20,11 @@ const HELP = `\
 rulecheck: deterministic repository checks
 
   rulecheck check [--root DIR] [--commit SHA | --untracked] [--id-prefix PREFIX] [--all-matches]
-                  [--text-budget MIB] [--format human|json]
+                  [--text-budget MIB] [--baseline FILE [--strict-baseline]] [--format human|json]
                      Build policy from .rulecheck/rules/**/*.rule.ts and scan the checkout
+  rulecheck baseline [--root DIR] [--commit SHA | --untracked] [--id-prefix PREFIX]
+                  [--text-budget MIB] [--baseline FILE [--write]]
+                     Record the finding counts of a complete scan as a baseline
   rulecheck test [--root DIR] [--commit SHA] [--id-prefix PREFIX]
                      Run the rule fixtures
   rulecheck list [--root DIR] [--commit SHA] [--id-prefix PREFIX]
@@ -39,6 +42,10 @@ text match instead of the first per rule and file; syntax rules cannot be counte
 yet, so selecting one exits 2. --text-budget sets how much scoped text one check
 reads, in MiB: 1 to 1024, default 64. A check that reaches it reports partial findings
 and exits 2; narrowing rule scopes is preferred to raising it.
+--baseline FILE counts every match and reports only rule and path counts above the
+baseline; --strict-baseline also fails counts below it. baseline prints the counts
+of a complete scan, or with --write replaces FILE; with --id-prefix only those
+rules' entries change. A relative FILE is resolved from the current directory.
 Rules are parsed as static data by the builder in ${install}; rule modules are never executed.
 The low-level evaluator that reads policy from stdin is ${evaluator}.
 --format json writes one versioned result document (schema/result-v1.json) to stdout.
@@ -53,7 +60,7 @@ const ROOT_HINT = "run from the checkout root or pass --root";
 const UNTRACKED_COMMIT = "--untracked applies to working-tree checks only; "
   + "a commit has no untracked files, so drop --untracked or --commit";
 // Flags that take no value; every other flag takes exactly one.
-const SWITCHES = ["--untracked", "--all-matches"];
+const SWITCHES = ["--untracked", "--all-matches", "--strict-baseline", "--write"];
 const MAX_TEXT_BUDGET = 1024;
 const TEXT_BUDGET_HINT = `--text-budget requires a whole number of MiB from 1 to ${MAX_TEXT_BUDGET} (default 64)`;
 
@@ -65,7 +72,10 @@ function fail(message) {
 function parse(command, args) {
   const options = new Map();
   const allowed = command === "validate" ? ["--root", "--commit"] : ["--root", "--commit", "--id-prefix"];
-  if (command === "check") allowed.push("--format", "--untracked", "--all-matches", "--text-budget");
+  if (command === "check") {
+    allowed.push("--format", "--untracked", "--all-matches", "--text-budget", "--baseline", "--strict-baseline");
+  }
+  if (command === "baseline") allowed.push("--untracked", "--text-budget", "--baseline", "--write");
   for (let index = 0; index < args.length; index += 1) {
     const flag = args[index];
     const value = SWITCHES.includes(flag) ? true : args[++index];
@@ -75,6 +85,14 @@ function parse(command, args) {
     options.set(flag, value);
   }
   if (options.has("--untracked") && options.has("--commit")) throw new UsageError(UNTRACKED_COMMIT);
+  if (options.has("--strict-baseline") && !options.has("--baseline")) {
+    throw new UsageError("--strict-baseline requires --baseline FILE");
+  }
+  if (options.has("--write") && !options.has("--baseline")) {
+    throw new UsageError("--write requires --baseline FILE, the file to regenerate");
+  }
+  // The evaluator runs in the installation directory, so pass an absolute path.
+  if (options.has("--baseline")) options.set("--baseline", resolve(options.get("--baseline")));
   if (!["human", "json", undefined].includes(options.get("--format"))) {
     throw new UsageError("--format requires human or json");
   }
@@ -160,8 +178,10 @@ function errorResult(env, builder, options, messages) {
       commit,
       mode: commit ? "commit" : "working-tree",
       ...(options.has("--untracked") ? { untracked: true } : {}),
-      ...(options.has("--all-matches") ? { matches: "all" } : {}),
+      ...(options.has("--all-matches") || options.has("--baseline") ? { matches: "all" } : {}),
       ...(options.has("--text-budget") ? { textBudgetMiB: Number(options.get("--text-budget")) } : {}),
+      ...(options.has("--baseline") ? { baselineSha256: null } : {}),
+      ...(options.has("--strict-baseline") ? { strictBaseline: true } : {}),
     },
     tools: { builder, evaluator: version.status === 0 ? version.stdout.trim() : `rulecheck (${evaluator})` },
   };
@@ -191,7 +211,7 @@ function main(argv) {
     const result = spawnSync(evaluator, [command, ...args], { stdio: ["ignore", "inherit", "inherit"], env });
     return status(result) ?? fail(`cannot start ${evaluator}: ${result.error.message}`);
   }
-  if (!["check", "test", "list", "validate"].includes(command)) {
+  if (!["check", "baseline", "test", "list", "validate"].includes(command)) {
     throw new UsageError(`unknown command ${JSON.stringify(command)}; run rulecheck help`);
   }
 
@@ -222,11 +242,15 @@ function main(argv) {
     return fail(message);
   }
 
-  const evaluate = [command, ...(command === "check" ? source : [])];
+  const evaluate = [command, ...(["check", "baseline"].includes(command) ? source : [])];
   if (options.has("--id-prefix")) evaluate.push("--id-prefix", options.get("--id-prefix"));
   if (options.has("--untracked")) evaluate.push("--untracked");
   if (options.has("--all-matches")) evaluate.push("--all-matches");
   if (options.has("--text-budget")) evaluate.push("--text-budget", options.get("--text-budget"));
+  if (options.has("--baseline")) evaluate.push("--baseline", options.get("--baseline"));
+  for (const flag of ["--strict-baseline", "--write"]) {
+    if (options.has(flag)) evaluate.push(flag);
+  }
   if (json) evaluate.push("--format", "json");
   const result = spawnSync(evaluator, evaluate, {
     cwd: install,
