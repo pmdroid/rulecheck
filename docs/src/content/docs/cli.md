@@ -254,6 +254,18 @@ With `--commit SHA`, the candidate files are the commit's tree, and the index an
 
 A forbidden-path rule with `anchors` also needs at least one candidate file that matches an anchor, or the check exits 2 for that rule. Anchors are matched against the same candidates in both modes, so a moved or deleted directory exits 2 in the working tree and at the exact commit. Anchors are only checked for presence: their text is not read and doesn't count toward the text budget, and they are still checked after a budget stop. A symlink can't be an anchor. The working tree skips it, so the anchor is missing, and `--commit` exits 2 for a scoped symlink. Without `anchors`, a forbidden-path rule that matches no file passes, as in every earlier release.
 
+### When to pass `--untracked`
+
+Pass `--untracked` for a local check before you stage, such as an editor hook, a pre-commit check of new files, or an agent that creates files and checks them before `git add`. It answers "would this be a finding once added?" without changing the index.
+
+Leave it off where the candidate set must be exactly what Git records:
+
+- In CI, check the commit with `--commit "$(git rev-parse HEAD)"`. A CI checkout has no untracked source files, and build output, caches and downloaded tools that a job creates are untracked too, so `--untracked` would only add noise.
+- For a baseline that others reuse, record it from a commit or the index, so a scratch file on your machine doesn't enter the counts.
+- When the scope must stay what reviewers saw, because an untracked file can also fill a text rule's otherwise empty scope.
+
+Without the flag, a new file is skipped until `git add`, which is the usual reason a rule seems to miss a file you just created. Either form never scans ignored files, so a file listed in `.gitignore` is not checked until it is force-added.
+
 ## Rule sources
 
 Every entry under `.rulecheck/rules` must be a regular file or a real directory, in both modes. Without `--commit`, a symlink, FIFO, socket, device, or symlinked directory there exits 2 with an error that names the path, even if its name doesn't end in `.rule.ts`. With `--commit SHA`, any entry that is not a regular blob or a tree exits 2 the same way. This keeps a rule from silently dropping out of the policy. Without `--commit`, nested Git repositories and submodules under `.rulecheck/rules` are skipped; in a commit a submodule there exits 2. Regular files that don't end in `.rule.ts` are ignored. The optional `.rulecheck/sets` directory follows the same entry rules, must itself be a real directory, and loads files that end in `.set.ts`. Sets always come from the same place as the rules: the disk without `--commit`, the commit's tree with it.
@@ -262,9 +274,26 @@ Without `--commit`, the builder reads `.rulecheck/rules` from disk, not from the
 
 Rule sources under `.rulecheck/` are scan candidates like any other file, in both working-tree and `--commit` mode. This is part of the v1 contract; omitting them automatically is deferred to a later contract version. A broad scope such as `**/*.ts` can match a rule's own pattern or fixture text, so add `exclude: [".rulecheck/**"]` to that rule. The [rule sources recipe](../cookbook/#rule-sources-in-a-broad-scope) shows the finding without the exclude and the clean check with it.
 
+## Installed commands and checkout tools
+
+`cargo install --locked rulecheck` and the [release archives](../install/) install the same two executables and nothing else: `rulecheck` and `rulecheck-evaluator`, side by side in one `bin` directory. The builder (`tools/build.mjs`) and the wrapper (`bin/rulecheck.mjs`) are embedded in `rulecheck`, which runs them from a private temporary directory for each command. They aren't installed as files, and nothing is written to the checked repository.
+
+| Command | Where it runs | What it needs |
+| --- | --- | --- |
+| `rulecheck check`, `baseline`, `test`, `list`, `validate` | Installed | Node.js 20 or later on `PATH`, and npm on the first run to set up the pinned compiler |
+| `rulecheck schema`, `help`, `--version` | Installed | Nothing else |
+| `rulecheck-evaluator <command>` | Installed | Policy JSON on stdin |
+| `node tools/build.mjs`, `npm run --silent build` | Rulecheck checkout only | `npm ci --ignore-scripts` in that checkout |
+| `node bin/rulecheck.mjs` | Rulecheck checkout only | `npm ci --ignore-scripts` and `cargo build --release`, because it runs `target/release/rulecheck-evaluator` |
+| `node tools/check-ci.mjs`, `tools/reproduce.mjs`, `tools/bench-rules.mjs`, `tools/bench-text-budget.mjs`, `tools/pilot.mjs` | Rulecheck checkout only | `npm ci --ignore-scripts` and a built evaluator, passed as an argument or under `target/release` |
+
+Use the installed `rulecheck` in another repository. A `node tools/...` command in these docs means a Rulecheck source checkout of the version you are testing, not the installation.
+
+There is no installed command that prints the policy JSON, and none is planned for v1. Every evaluator command already runs through `rulecheck` with its bundled builder, including `check --format json`, whose result records the SHA-256 of the exact policy bytes. Printing the policy matters only to tooling that pins the builder and the evaluator separately, such as exact-commit shadow CI, and that tooling builds both from a reviewed source checkout anyway. An installed `build` command would also make a generated policy file easy to commit, which v1 avoids on purpose. The installed `rulecheck-evaluator` reads policy JSON from stdin for anyone who has it.
+
 ## Low-level pipeline
 
-For tooling, the two stages also run separately. `node tools/build.mjs [--root DIR] [--commit SHA]` (or `npm run --silent build -- ...`) in the Rulecheck checkout writes the policy JSON to stdout. The evaluator binary `target/release/rulecheck-evaluator` (or `target/debug/rulecheck-evaluator`) reads it from stdin with the same commands and flags:
+For tooling, the two stages also run separately from a Rulecheck checkout. After `npm ci --ignore-scripts` and `cargo build --release` there, `node tools/build.mjs [--root DIR] [--commit SHA]` (or `npm run --silent build -- ...`) writes the policy JSON to stdout. The evaluator binary `target/release/rulecheck-evaluator` (or `target/debug/rulecheck-evaluator`, or the installed `rulecheck-evaluator`) reads it from stdin with the same commands and flags:
 
 ```bash
 set -o pipefail
@@ -272,4 +301,4 @@ node tools/build.mjs --root /path/to/checkout |
   target/release/rulecheck-evaluator check --root /path/to/checkout
 ```
 
-The shadow CI workflow uses this pipeline with separately pinned tools.
+The shadow CI workflow uses this pipeline with separately pinned tools. CI runs this example from the checkout, and the install examples on this site against `rulecheck` installed by Cargo and from each release archive, on Linux and macOS (`tests/installed-docs.test.mjs`).

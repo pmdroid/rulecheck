@@ -11,6 +11,18 @@ import { fileURLToPath } from "node:url";
 const install = realpathSync(fileURLToPath(new URL("..", import.meta.url)));
 const builder = join(install, "tools", "build.mjs");
 const evaluator = join(install, "target", "release", "rulecheck-evaluator");
+// The Cargo-installed `rulecheck` runs this file from a private temporary copy
+// whose evaluator is a symlink to the installed one. Name the real binary and
+// don't print the temporary directory, which is gone once the command exits.
+const installedEvaluator = (() => {
+  try {
+    return realpathSync(evaluator);
+  } catch {
+    return evaluator;
+  }
+})();
+const bundled = installedEvaluator !== evaluator;
+const builderPlace = bundled ? "bundled with this installation" : `in ${install}`;
 const guard = "RULECHECK_WRAPPER_ACTIVE";
 const maxPolicy = 4 * 1024 * 1024; // MAX_POLICY in src/policy.rs
 const maxResult = 64 * 1024 * 1024;
@@ -48,8 +60,8 @@ of a complete scan, or with --write replaces FILE; with --id-prefix only those
 rules' entries change. A relative FILE is resolved from the current directory.
 --strict-fixtures (test and validate, opt-in) also fails any rule whose fixtures all
 expect no violation, since such a rule passes even if it never matches.
-Rules are parsed as static data by the builder in ${install}; rule modules are never executed.
-The low-level evaluator that reads policy from stdin is ${evaluator}.
+Rules are parsed as static data by the builder ${builderPlace}; rule modules are never executed.
+The low-level evaluator that reads policy from stdin is ${installedEvaluator}.
 check --format json writes one versioned result document (schema/result-v1.json) to stdout.
 list --format json writes every rule's ID, kind, tags, provenance and remediation.
 The builder and the evaluator each stop after ${timeout / 1000} s.

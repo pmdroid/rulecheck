@@ -108,7 +108,7 @@ jobs:
               process.exit(1);
             }' "$root/PROVENANCE.json" "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" "$TARGET"
           cd "$GITHUB_WORKSPACE"
-          RULECHECK_INSTALLED_BIN="$root/bin/rulecheck" node --test tests/installed-cli.test.mjs
+          RULECHECK_INSTALLED_BIN="$root/bin/rulecheck" node --test tests/installed-cli.test.mjs tests/installed-docs.test.mjs
 
   manifest:
     needs: smoke

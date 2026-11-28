@@ -26,6 +26,7 @@ jobs:
       - run: cargo test --locked --all-targets --all-features
       - run: cargo build --locked
       - run: node --test tests/cookbook.test.mjs tests/release-archive.test.mjs
+      - run: RULECHECK_EVALUATOR=target/debug/rulecheck-evaluator node --test tests/installed-docs.test.mjs
 
   cargo-install:
     strategy:
@@ -50,7 +51,7 @@ jobs:
             source="${archive%.crate}"
           done
           cargo install --debug --locked --path "$source" --root "$RUNNER_TEMP/rulecheck-install"
-          RULECHECK_INSTALLED_BIN="$RUNNER_TEMP/rulecheck-install/bin/rulecheck" node --test tests/installed-cli.test.mjs tests/installed-sources.test.mjs
+          RULECHECK_INSTALLED_BIN="$RUNNER_TEMP/rulecheck-install/bin/rulecheck" node --test tests/installed-cli.test.mjs tests/installed-sources.test.mjs tests/installed-docs.test.mjs
 
   # Builds the release archives for every target and runs each one without Rust.
   release-archives:

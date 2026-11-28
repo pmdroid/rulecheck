@@ -132,3 +132,13 @@ A text rule whose `paths` match no tracked file makes `check` exit 2 with `empty
 From another directory, use `rulecheck check --root /path/to/checkout`. The policy goes straight from the builder to the evaluator through a pipe. No `policy.json` is written, and nothing from the checked repository is imported or run, including its package scripts and `node_modules`.
 
 `rulecheck check` reads the working-tree contents of tracked regular files. Pass a full `--commit SHA` to inspect committed blobs instead.
+
+## Common surprises when moving rules over
+
+These come up most when you port checks from a grep script, a lint rule or a CI job into Rulecheck:
+
+- **A new file isn't reported.** `check` scans files in the Git index. Run `git add` first, or pass `--untracked` for a local check before staging. In CI, check the exact commit with `--commit "$(git rev-parse HEAD)"` instead. See [when to pass `--untracked`](../cli/#when-to-pass---untracked).
+- **The rule reports its own file.** Rule sources under `.rulecheck/` are scanned like any other file, so a broad scope such as `**/*.ts` finds the rule's pattern and fixture text. Add `exclude: [".rulecheck/**"]` to that rule ([recipe](../cookbook/#rule-sources-in-a-broad-scope)).
+- **A JavaScript regex doesn't compile or matches differently.** Patterns use the Rust `regex` dialect, with no look-around or backreferences, Unicode `\d`, `\w` and `\b`, nested character classes, and inline flags instead of `/…/i`. See [Port a JavaScript regex](../authoring/#port-a-javascript-regex) for the differences and rewrites, and add a fixture for each input the old rule caught.
+- **Only the first match per file is reported.** That is the v1 default. Pass `--all-matches` to count every text match ([Every match](../cli/#every-match)).
+- **A command from these docs isn't installed.** `node tools/build.mjs` and the other `node tools/...` scripts need a Rulecheck source checkout. Cargo and the release archives install only `rulecheck` and `rulecheck-evaluator` ([Installed commands and checkout tools](../cli/#installed-commands-and-checkout-tools)).
