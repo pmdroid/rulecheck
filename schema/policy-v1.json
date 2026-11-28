@@ -75,13 +75,17 @@
         "then": {
           "required": ["selector"],
           "not": { "required": ["pattern"] },
-          "properties": { "fixtures": { "items": { "required": ["content"] } } }
+          "properties": {
+            "fixtures": { "items": { "required": ["content"], "properties": { "expectAll": { "not": {} } } } }
+          }
         },
         "else": {
           "not": { "required": ["pattern"] },
           "properties": {
             "selector": { "not": {} },
-            "fixtures": { "items": { "not": { "required": ["content"] } } }
+            "fixtures": {
+              "items": { "not": { "required": ["content"] }, "properties": { "expectAll": { "not": {} } } }
+            }
           }
         }
       }
@@ -125,26 +129,34 @@
       }
     },
     "fixture": {
+      "description": "Asserts the first match with expect (null for none), or, for text rules, every match in --all-matches order with expectAll. Use exactly one.",
       "type": "object",
-      "required": ["path", "expect"],
+      "required": ["path"],
       "additionalProperties": false,
+      "oneOf": [{ "required": ["expect"] }, { "required": ["expectAll"] }],
       "properties": {
         "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
         "content": { "type": "string" },
         "expect": {
           "oneOf": [
             { "type": "null" },
-            {
-              "type": "object",
-              "required": ["line", "column"],
-              "additionalProperties": false,
-              "properties": {
-                "line": { "type": "integer", "minimum": 1 },
-                "column": { "type": "integer", "minimum": 1 }
-              }
-            }
+            { "$ref": "#/$defs/location" }
           ]
+        },
+        "expectAll": {
+          "description": "Every match location in ascending order, without duplicates. An empty list expects no match.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/location" }
         }
+      }
+    },
+    "location": {
+      "type": "object",
+      "required": ["line", "column"],
+      "additionalProperties": false,
+      "properties": {
+        "line": { "type": "integer", "minimum": 1 },
+        "column": { "type": "integer", "minimum": 1 }
       }
     }
   }

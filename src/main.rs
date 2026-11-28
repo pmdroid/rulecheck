@@ -2,8 +2,8 @@ mod policy;
 mod repository;
 mod syntax;
 
-use policy::{CompiledRule, Location, Result};
-use repository::Report;
+use policy::{CompiledRule, Expect, Location, Result};
+use repository::{Matches, Report};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
@@ -23,10 +23,12 @@ rulecheck: deterministic repository checks
   rulecheck validate                        Validate a policy from stdin
   rulecheck list [--id-prefix PREFIX]        List policy rule IDs
   rulecheck test [--id-prefix PREFIX]        Check exact fixture expectations
-  rulecheck check [--root DIR] [--commit SHA | --untracked] [--id-prefix PREFIX] [--format human|json]
+  rulecheck check [--root DIR] [--commit SHA | --untracked] [--id-prefix PREFIX] [--all-matches] [--format human|json]
                                             Scan a checkout or exact Git commit
 
 --untracked adds non-ignored untracked files to a working-tree check.
+--all-matches reports every text match instead of the first per rule and file;
+syntax rules cannot be counted yet, so selecting one exits 2.
 
 Exit codes: 0 clean, 1 violation or fixture mismatch, 2 cannot judge.";
 
@@ -63,6 +65,7 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<u8> {
     let mut prefix = None;
     let mut format = None;
     let mut untracked = false;
+    let mut matches = Matches::First;
     while let Some(flag) = args.next() {
         match flag.to_str() {
             Some("--root") if command == "check" && root.is_none() => {
@@ -82,6 +85,9 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<u8> {
                 );
             }
             Some("--untracked") if command == "check" && !untracked => untracked = true,
+            Some("--all-matches") if command == "check" && matches == Matches::First => {
+                matches = Matches::All;
+            }
             Some("--id-prefix")
                 if matches!(command, "list" | "test" | "check") && prefix.is_none() =>
             {
@@ -119,6 +125,7 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<u8> {
                 root,
                 commit.as_deref(),
                 untracked,
+                matches,
                 prefix.as_deref(),
                 format.unwrap_or(Format::Human),
             );
@@ -162,6 +169,7 @@ fn check(
     root: &Path,
     commit: Option<&str>,
     untracked: bool,
+    matches: Matches,
     prefix: Option<&str>,
     format: Format,
 ) -> Result<u8> {
@@ -175,13 +183,15 @@ fn check(
         .as_ref()
         .map_err(Clone::clone)
         .and_then(|rules| select(rules, prefix));
-    let report = selected
-        .as_ref()
-        .map_err(Clone::clone)
-        .and_then(|rules| match commit {
-            Some(sha) => repository::check_commit(root, sha, rules),
-            None => repository::check(root, rules, untracked),
-        });
+    let report = selected.as_ref().map_err(Clone::clone).and_then(|rules| {
+        if matches == Matches::All {
+            all_matches_supported(rules)?;
+        }
+        match commit {
+            Some(sha) => repository::check_commit(root, sha, rules, matches),
+            None => repository::check(root, rules, untracked, matches),
+        }
+    });
 
     if format == Format::Human {
         let report = report?;
@@ -243,6 +253,9 @@ fn check(
     if untracked {
         source["untracked"] = json!(true);
     }
+    if matches == Matches::All {
+        source["matches"] = json!("all");
+    }
     let result = json!({
         "resultVersion": RESULT_VERSION,
         "command": "check",
@@ -266,6 +279,22 @@ fn check(
     Ok(code)
 }
 
+/// All-match counts must be exact, so a selected syntax rule, whose node count
+/// is not defined yet, stops the check before any file is read.
+fn all_matches_supported(rules: &[&CompiledRule]) -> Result<()> {
+    for rule in rules {
+        if let policy::Matcher::Syntax(_) = rule.matcher {
+            return Err(format!(
+                "[{}] --all-matches does not support syntax rules: they do not count matching \
+                 nodes yet, and reporting only their first match would undercount; select text \
+                 and forbidden-path rules with --id-prefix or drop --all-matches",
+                rule.id
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn finding_json(finding: &repository::Finding) -> Value {
     json!({
         "ruleId": finding.id,
@@ -285,40 +314,68 @@ fn test(rules: &[&CompiledRule]) -> bool {
     for rule in rules {
         for (index, fixture) in rule.fixtures.iter().enumerate() {
             count += 1;
-            let actual = if rule.applies_to(&fixture.path) {
-                match rule
-                    .matcher
-                    .location(&fixture.path, fixture.content.as_deref())
-                {
-                    Ok(actual) => actual,
-                    Err(error) => {
-                        errors.push((&fixture.path, &rule.id, index, error));
-                        continue;
-                    }
+            let applies = rule.applies_to(&fixture.path);
+            let content = fixture.content.as_deref();
+            let mismatch = match &fixture.expect {
+                Expect::First(expected) => {
+                    let actual = match applies {
+                        true => rule.matcher.location(&fixture.path, content),
+                        false => Ok(None),
+                    };
+                    actual.map(|actual| {
+                        (actual != *expected).then(|| {
+                            let at = actual.or(*expected).expect("at least one location");
+                            (at, describe(*expected), describe(actual))
+                        })
+                    })
                 }
-            } else {
-                None
+                Expect::All(expected) => {
+                    let actual = match applies {
+                        true => rule
+                            .matcher
+                            .find_all(&fixture.path, content, usize::MAX)
+                            .map(|found| found.into_iter().map(|(at, _)| at).collect()),
+                        false => Ok(Vec::new()),
+                    };
+                    actual.map(|actual: Vec<Location>| {
+                        (actual != *expected).then(|| {
+                            // Point at the first position where the lists differ.
+                            let at = actual
+                                .iter()
+                                .zip(expected)
+                                .find(|(found, wanted)| found != wanted)
+                                .map(|(found, _)| *found)
+                                .or_else(|| actual.get(expected.len()).copied())
+                                .or_else(|| expected.get(actual.len()).copied())
+                                .expect("at least one location");
+                            (at, describe_all(expected), describe_all(&actual))
+                        })
+                    })
+                }
             };
-            if actual != fixture.expect {
-                failures.push((
-                    &fixture.path,
-                    &rule.id,
-                    index,
-                    fixture.expect,
-                    actual,
-                    &rule.remediation,
-                ));
+            match mismatch {
+                Ok(None) => {}
+                Ok(Some((at, expected, actual))) => {
+                    failures.push((
+                        &fixture.path,
+                        &rule.id,
+                        index,
+                        at,
+                        expected,
+                        actual,
+                        &rule.remediation,
+                    ));
+                }
+                Err(error) => errors.push((&fixture.path, &rule.id, index, error)),
             }
         }
     }
     failures.sort_unstable();
-    for (path, id, index, expected, actual, remediation) in &failures {
-        let Location { line, column } = actual.or(*expected).expect("at least one location");
+    for (path, id, index, at, expected, actual, remediation) in &failures {
+        let Location { line, column } = at;
         println!(
-            "{path}:{line}:{column}: [{id}] fixture {} expected {}, found {}. {remediation} Update the rule or fixture.",
+            "{path}:{line}:{column}: [{id}] fixture {} expected {expected}, found {actual}. {remediation} Update the rule or fixture.",
             index + 1,
-            describe(*expected),
-            describe(*actual)
         );
     }
     errors.sort_unstable();
@@ -339,4 +396,27 @@ fn describe(location: Option<Location>) -> String {
         Some(Location { line, column }) => format!("a violation at {line}:{column}"),
         None => "no violation".into(),
     }
+}
+
+/// An `expectAll` list. Only the first 16 positions are written out, so a
+/// runaway regex cannot flood the output.
+fn describe_all(locations: &[Location]) -> String {
+    if locations.is_empty() {
+        return "no violations".into();
+    }
+    let shown: Vec<_> = locations
+        .iter()
+        .take(16)
+        .map(|Location { line, column }| format!("{line}:{column}"))
+        .collect();
+    let more = match locations.len() {
+        n if n > 16 => format!(" and {} more", n - 16),
+        _ => String::new(),
+    };
+    let noun = if locations.len() == 1 {
+        "violation"
+    } else {
+        "violations"
+    };
+    format!("{} {noun} at {}{more}", locations.len(), shown.join(", "))
 }
