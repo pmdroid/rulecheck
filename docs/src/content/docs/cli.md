@@ -107,7 +107,7 @@ A partial result is never a pass, and it is never a complete list of findings. D
 | One `--id-prefix pkgN/` run per package, default budget | 4 | 4 | 80 MiB (20 MiB per run) | 4.5 s |
 | One run with `--text-budget 80` | 1 | 1 | 80 MiB | 1.7 s |
 
-Both report the same 4 findings. Each file is read once either way, so the scan volume is the same. The difference is the per-run cost of starting Node.js and the builder, which grows with the number of prefixes. Times vary by machine, and the script prints its own measurements. Use `--packages`, `--mib` and `--runs` to change the snapshot.
+Both report the same 4 findings. Each file is read once either way, so the scan volume is the same. The difference is the per-run cost of starting Node.js and the builder, which grows with the number of prefixes. Times vary by machine, and the script prints its own measurements. Use `--packages`, `--mib` and `--runs` to change the snapshot. To time `check --baseline` on a repository with existing findings and rules that share files, use the [adoption pilot](../baselines/#pilot-an-adoption).
 
 ## Machine-readable results
 
