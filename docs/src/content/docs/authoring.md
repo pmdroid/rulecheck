@@ -219,6 +219,47 @@ The note only appears with a failing fixture, and only for these class construct
 
 The rewrites have limits. A negative look-behind rewrite consumes the character before the match, so the finding starts one column early. A list of banned names doesn't catch a name that the list leaves out, where a negative look-ahead would. Rulecheck doesn't offer a backtracking engine for the remaining cases, because such an engine can take exponential time on crafted input.
 
+## Structured YAML rules
+
+A rule with `kind: "structured"` takes a `structure` instead of a `pattern`. Rulecheck reads each `.yml` or `.yaml` file in scope as YAML, walks an ordered `path` through every document, and applies one `assert`. Nothing in the file is executed, and aliases, merge keys and tags are not expanded. Fixtures need `content`, as text fixtures do. The cookbook has tested recipes for [a key every job must declare](../cookbook/#a-key-every-entry-must-declare) and [a forbidden value](../cookbook/#a-forbidden-yaml-value).
+
+```ts
+structure: {
+  format: "yaml",
+  path: [{ key: "jobs" }, { each: "mapping" }],
+  assert: { kind: "has-key", key: "timeout-minutes" },
+}
+```
+
+- `format` is `"yaml"`. Any other file in scope can't be judged, so scope structured rules to `.yml` and `.yaml` files.
+- `path` lists up to 16 segments, applied in order. `{ key: "jobs" }` selects the value of the mapping key whose text is `jobs`. `{ index: 0 }` selects a zero-based sequence item. `{ each: "mapping" }` selects every value of a mapping and `{ each: "sequence" }` every item of a sequence. A segment that doesn't fit the node, such as a missing key, an index past the end, or `key` on a scalar or a sequence, selects nothing there.
+- `assert` is one of:
+  - `{ kind: "present" }`: report a document where the path selects nothing, at the deepest node the path reached. A file with no documents, such as an empty file or one with only comments, is reported at 1:1.
+  - `{ kind: "absent" }`: report each selected node, at the key that selected it.
+  - `{ kind: "equals", value }`: report each selected node that isn't a scalar with that text.
+  - `{ kind: "not-equals", value }`: report each selected scalar with that text.
+  - `{ kind: "has-key", key }`: report each selected node that isn't a mapping with that key, at the key or item that selected it. With `each`, this checks every entry, for example that every job or every step declares a key.
+
+`present` and `absent` need at least one segment. `value` and `key` are up to 1024 bytes without control characters.
+
+Matching follows these rules:
+
+- **Missing paths.** Only `present` reports a missing path. `absent`, `equals`, `not-equals` and `has-key` report nothing when the path selects nothing, so pair them with a `present` rule when the key is required.
+- **Multiple documents.** Each document of a `---`-separated file is checked on its own, and findings from every document are reported.
+- **Scalars.** Keys and values compare by their text after unquoting. Quoting style and tags are ignored and no type resolution happens, so `true`, `"true"` and `!!str true` all have the text `true`, and `on` stays the key `on`. A key that is itself a mapping or a sequence never matches a `key` segment.
+- **Locations.** A finding has a one-based line and Unicode scalar column and the byte range of the node it points at, quotes included. Findings in a file come in ascending byte order, and each failing node is one finding, so `check --all-matches` and baselines count them and fixtures can use `expectAll`.
+
+A file in scope that Rulecheck can't judge makes `check` exit 2 and name the rule, file and position, in the working tree and with `--commit` alike, and `test` reports such a fixture as one that cannot be judged. That happens when:
+
+- the file isn't valid YAML, including tabs used for indentation and invalid UTF-8;
+- any mapping in the file has a duplicate key, because tools disagree on which value wins;
+- the path reaches an alias (`*name`) or looks up a key in a mapping with a `<<` merge key, because Rulecheck doesn't expand them. An alias elsewhere in the file is fine;
+- the file nests deeper than 128 levels or has more than 200,000 nodes.
+
+Files are read up to 1 MiB and count toward `--text-budget`. Parsing is a single pass over the parser's events, without recursion, and each path segment visits each selected node once. Rulecheck pins saphyr-parser 0.4.1 exactly, because a parser update can change how a file reads.
+
+Rulecheck releases from before structured rules reject a policy that uses `kind: "structured"` (exit 2). Update every evaluator that checks the repository, including the trusted base tools in CI, before you add one. JSON, TOML and HCL formats are not available yet.
+
 ## Type-check rules in your repository
 
 In the Rulecheck checkout, `npm run typecheck` checks the bundled rules and examples. In your own repository, install the SDK and TypeScript:

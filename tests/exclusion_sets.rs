@@ -512,7 +512,7 @@ fn evaluator_bounds_globs_references_depth_and_cycles() {
             "skipIfContent": { "kind": "literal", "value": "x", "firstBytes": 1 },
             "remediation": "Remove it.", "fixtures": [{ "path": ".env", "expect": { "line": 1, "column": 1 } }],
         }] }),
-        "skipIfContent needs a text or syntax rule",
+        "skipIfContent needs a text, syntax or structured rule",
     );
 }
 
