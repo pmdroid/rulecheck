@@ -177,6 +177,22 @@ fn installed_check_loads_rules_from_another_repository_without_running_its_code(
     expect(&install.run(root, &["test"]), 0, "2 fixtures passed\n");
     expect(&install.run(root, &["list"]), 0, "config/no-legacy-mode\n");
     expect(&install.run(root, &["validate"]), 0, "");
+    let covered = "every selected rule has a positive fixture\n";
+    expect(
+        &install.run(root, &["test", "--strict-fixtures"]),
+        0,
+        &format!("2 fixtures passed\n{covered}"),
+    );
+    expect(
+        &install.run(root, &["validate", "--strict-fixtures"]),
+        0,
+        covered,
+    );
+    let usage = expect(&install.run(root, &["check", "--strict-fixtures"]), 2, "");
+    assert!(
+        usage.contains("unexpected argument \"--strict-fixtures\""),
+        "{usage}"
+    );
     let elsewhere = markers.path();
     expect(
         &install.run(elsewhere, &["check", "--root", root_arg]),

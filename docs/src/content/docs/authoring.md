@@ -26,6 +26,40 @@ An `expectAll` mismatch starts with the first position where the lists differ an
 src/lib/math.ts:4:3: [source/no-console-log] fixture 2 expected 1 violation at 2:3, found 2 violations at 2:3, 4:3. Use the logger instead. Update the rule or fixture.
 ```
 
+## Pair a positive and a negative fixture
+
+Give every rule at least two fixtures: a positive one that expects a violation, and a negative one that expects none. The positive fixture proves the rule catches the bug. The negative fixture proves it leaves the fixed code alone. Either one alone can pass for the wrong reason. A rule with only negative fixtures passes `rulecheck test` even if its pattern, selector or path globs can never match anything.
+
+```ts
+fixtures: [
+  // Positive: the bug is reported at its exact place.
+  { path: "config/app.toml", content: "name = \"app\"\nlegacy_mode = true\n", expect: { line: 2, column: 1 } },
+  // Negative: the fixed setting is clean.
+  { path: "config/app.toml", content: "legacy_mode = false\n", expect: null },
+],
+```
+
+The pair applies to every rule kind. A forbidden-path rule pairs a fixture at a forbidden path, `expect: { line: 1, column: 1 }`, with one at an allowed path, `expect: null`. A syntax rule pairs content with the node, such as a comment, with content that has none. An `expectAll` fixture counts as positive when it lists at least one location; `expectAll: []` is negative.
+
+### Strict fixture coverage
+
+`--strict-fixtures` on `test` or `validate` fails any selected rule that has no positive fixture:
+
+```bash
+rulecheck test --strict-fixtures
+```
+
+```text
+4 fixtures passed
+config/app.toml:1:1: [config/no-debug-true] has no positive fixture: its only fixture expects no violation, so the rule would pass even if it never matched. Add a fixture that expects a violation.
+```
+
+Each line names the rule's first fixture path. The command exits 1 when a rule has no positive fixture, and prints `every selected rule has a positive fixture` when all have one. `--id-prefix` limits the check to the selected rules. A rule with only positive fixtures passes; add a negative one anyway. A rule with no fixtures is not a coverage gap: the policy loader rejects it in every mode, and the command exits 2.
+
+The flag is opt-in, so existing callers are unaffected. Plain `rulecheck test` and `rulecheck validate`, their output and their exit codes are the same as before, and the policy format does not change. To adopt it, run `rulecheck test --strict-fixtures` locally, add a positive fixture to each rule it reports, then add the flag to your CI step. Shadow CI (`tools/check-ci.mjs`) still runs plain `test`.
+
+Fixture coverage and [baselines](../baselines/) are separate. A baseline allows existing findings in the repository; it never counts fixtures, and `--strict-fixtures` never reads a baseline. A rule with a baseline allowance still needs its own positive fixture.
+
 ## Require text in the same file
 
 A text rule with `requires` reports its `pattern` matches only in files where the `requires` text appears nowhere:

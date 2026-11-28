@@ -25,9 +25,10 @@ rulecheck: deterministic repository checks
   npm run --silent build -- [--root DIR]    Emit a policy from TypeScript rules
   rulecheck schema                          Print the version 1 JSON schema
   rulecheck help                            Print this help
-  rulecheck validate                        Validate a policy from stdin
+  rulecheck validate [--strict-fixtures]    Validate a policy from stdin
   rulecheck list [--id-prefix PREFIX]        List policy rule IDs
-  rulecheck test [--id-prefix PREFIX]        Check exact fixture expectations
+  rulecheck test [--id-prefix PREFIX] [--strict-fixtures]
+                                            Check exact fixture expectations
   rulecheck check [--root DIR] [--commit SHA | --untracked] [--id-prefix PREFIX] [--all-matches]
                   [--text-budget MIB] [--baseline FILE [--strict-baseline]] [--format human|json]
                                             Scan a checkout or exact Git commit
@@ -44,6 +45,8 @@ default 64. A check that reaches it reports partial findings and exits 2.
 the baseline; --strict-baseline also fails counts below it. baseline records
 the counts of a complete scan to stdout, or with --write replaces FILE; with
 --id-prefix only those rules' entries change.
+--strict-fixtures also fails any selected rule whose fixtures all expect no
+violation: such a rule passes even if it can never match. It is opt-in.
 
 Exit codes: 0 clean, 1 violation or fixture mismatch, 2 cannot judge.";
 
@@ -96,6 +99,7 @@ struct Options {
     baseline: Option<PathBuf>,
     strict_baseline: bool,
     write: bool,
+    strict_fixtures: bool,
 }
 
 fn run(mut args: impl Iterator<Item = OsString>) -> Result<u8> {
@@ -115,6 +119,7 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<u8> {
     let mut baseline = None;
     let mut strict_baseline = false;
     let mut write = false;
+    let mut strict_fixtures = false;
     while let Some(flag) = args.next() {
         match flag.to_str() {
             Some("--root") if scans && root.is_none() => {
@@ -151,6 +156,11 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<u8> {
                 strict_baseline = true;
             }
             Some("--write") if command == "baseline" && !write => write = true,
+            Some("--strict-fixtures")
+                if matches!(command, "validate" | "test") && !strict_fixtures =>
+            {
+                strict_fixtures = true;
+            }
             Some("--id-prefix")
                 if matches!(command, "list" | "test" | "check" | "baseline")
                     && prefix.is_none() =>
@@ -195,6 +205,7 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<u8> {
         baseline,
         strict_baseline,
         write,
+        strict_fixtures,
     };
 
     match command {
@@ -206,11 +217,18 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<u8> {
         "validate" | "list" | "test" => {
             let rules = policy::load(&policy::read(io::stdin().lock())?)?;
             let rules = select(&rules, options.prefix.as_deref())?;
-            match command {
-                "list" => rules.iter().for_each(|rule| println!("{}", rule.id)),
-                "test" => return Ok(u8::from(!test(&rules))),
-                _ => {}
+            let mut passed = match command {
+                "list" => {
+                    rules.iter().for_each(|rule| println!("{}", rule.id));
+                    true
+                }
+                "test" => test(&rules),
+                _ => true,
+            };
+            if options.strict_fixtures {
+                passed &= fixture_coverage(&rules);
             }
+            return Ok(u8::from(!passed));
         }
         _ => return Err(format!("unknown command {command:?}; run rulecheck help")),
     }
@@ -735,6 +753,39 @@ fn test(rules: &[&CompiledRule]) -> bool {
         println!("{count} fixtures passed");
     }
     failures.is_empty() && errors.is_empty()
+}
+
+/// `--strict-fixtures`: every selected rule needs at least one positive fixture,
+/// one that expects a violation. A rule whose fixtures all expect nothing still
+/// passes `test` when its matcher can never match, so the fixtures prove nothing
+/// about what it catches. Missing fixtures are already rejected by the loader.
+fn fixture_coverage(rules: &[&CompiledRule]) -> bool {
+    let mut uncovered: Vec<_> = rules
+        .iter()
+        .filter(|rule| {
+            !rule.fixtures.iter().any(|fixture| match &fixture.expect {
+                Expect::First(expected) => expected.is_some(),
+                Expect::All(expected) => !expected.is_empty(),
+            })
+        })
+        .collect();
+    uncovered.sort_unstable_by(|a, b| a.id.cmp(&b.id));
+    for rule in &uncovered {
+        let path = &rule.fixtures[0].path;
+        println!(
+            "{path}:1:1: [{}] has no positive fixture: {}, so the rule would pass even if \
+             it never matched. Add a fixture that expects a violation.",
+            rule.id,
+            match rule.fixtures.len() {
+                1 => "its only fixture expects no violation".to_string(),
+                n => format!("all {n} fixtures expect no violation"),
+            },
+        );
+    }
+    if uncovered.is_empty() {
+        println!("every selected rule has a positive fixture");
+    }
+    uncovered.is_empty()
 }
 
 fn describe(location: Option<Location>) -> String {

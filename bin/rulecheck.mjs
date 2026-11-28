@@ -25,11 +25,11 @@ rulecheck: deterministic repository checks
   rulecheck baseline [--root DIR] [--commit SHA | --untracked] [--id-prefix PREFIX]
                   [--text-budget MIB] [--baseline FILE [--write]]
                      Record the finding counts of a complete scan as a baseline
-  rulecheck test [--root DIR] [--commit SHA] [--id-prefix PREFIX]
+  rulecheck test [--root DIR] [--commit SHA] [--id-prefix PREFIX] [--strict-fixtures]
                      Run the rule fixtures
   rulecheck list [--root DIR] [--commit SHA] [--id-prefix PREFIX]
                      List rule IDs
-  rulecheck validate [--root DIR] [--commit SHA]
+  rulecheck validate [--root DIR] [--commit SHA] [--strict-fixtures]
                      Build and validate the policy
   rulecheck schema   Print the version 1 JSON schema
   rulecheck help     Print this help
@@ -46,6 +46,8 @@ and exits 2; narrowing rule scopes is preferred to raising it.
 baseline; --strict-baseline also fails counts below it. baseline prints the counts
 of a complete scan, or with --write replaces FILE; with --id-prefix only those
 rules' entries change. A relative FILE is resolved from the current directory.
+--strict-fixtures (test and validate, opt-in) also fails any rule whose fixtures all
+expect no violation, since such a rule passes even if it never matches.
 Rules are parsed as static data by the builder in ${install}; rule modules are never executed.
 The low-level evaluator that reads policy from stdin is ${evaluator}.
 --format json writes one versioned result document (schema/result-v1.json) to stdout.
@@ -60,7 +62,7 @@ const ROOT_HINT = "run from the checkout root or pass --root";
 const UNTRACKED_COMMIT = "--untracked applies to working-tree checks only; "
   + "a commit has no untracked files, so drop --untracked or --commit";
 // Flags that take no value; every other flag takes exactly one.
-const SWITCHES = ["--untracked", "--all-matches", "--strict-baseline", "--write"];
+const SWITCHES = ["--untracked", "--all-matches", "--strict-baseline", "--write", "--strict-fixtures"];
 const MAX_TEXT_BUDGET = 1024;
 const TEXT_BUDGET_HINT = `--text-budget requires a whole number of MiB from 1 to ${MAX_TEXT_BUDGET} (default 64)`;
 
@@ -76,6 +78,7 @@ function parse(command, args) {
     allowed.push("--format", "--untracked", "--all-matches", "--text-budget", "--baseline", "--strict-baseline");
   }
   if (command === "baseline") allowed.push("--untracked", "--text-budget", "--baseline", "--write");
+  if (command === "test" || command === "validate") allowed.push("--strict-fixtures");
   for (let index = 0; index < args.length; index += 1) {
     const flag = args[index];
     const value = SWITCHES.includes(flag) ? true : args[++index];
@@ -248,7 +251,7 @@ function main(argv) {
   if (options.has("--all-matches")) evaluate.push("--all-matches");
   if (options.has("--text-budget")) evaluate.push("--text-budget", options.get("--text-budget"));
   if (options.has("--baseline")) evaluate.push("--baseline", options.get("--baseline"));
-  for (const flag of ["--strict-baseline", "--write"]) {
+  for (const flag of ["--strict-baseline", "--write", "--strict-fixtures"]) {
     if (options.has(flag)) evaluate.push(flag);
   }
   if (json) evaluate.push("--format", "json");
