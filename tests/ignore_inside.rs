@@ -392,3 +392,152 @@ fn a_message_template_reads_the_reported_match() {
         format!("src/a.ts:2:1: [source/no-eval] input is passed to eval. {REMEDIATION}\n")
     );
 }
+
+/// `rm -rf` in shell code, but not in comments or quoted strings.
+fn no_rm(contexts: Value) -> Vec<u8> {
+    policy(&[json!({
+        "id": "scripts/no-rm-rf", "kind": "text", "paths": ["scripts/**"],
+        "pattern": { "kind": "literal", "value": "rm -rf" },
+        "ignoreInside": { "language": "bash", "contexts": contexts },
+        "remediation": REMEDIATION,
+        "fixtures": [{ "path": "scripts/x.sh", "content": "", "expect": null }]
+    })])
+}
+
+#[test]
+fn bash_comments_and_quoted_strings_are_skipped_and_code_is_not() {
+    let both = || json!(["comment", "string"]);
+    // Comments, single, ANSI-C and double-quoted strings are mentions.
+    let clean = "#!/bin/sh\n# rm -rf build\necho 'rm -rf a' $'rm -rf b' \"rm -rf c\"\n";
+    let dir = repo();
+    write(dir.path(), "scripts/clean.sh", clean);
+    assert_eq!(agree(dir.path(), &no_rm(both()), &["--all-matches"], 0), []);
+
+    // A skipped mention does not hide the command after it, and `$(...)`,
+    // `${...}` and `$((...))` inside double quotes are code.
+    let mixed =
+        "echo \"rm -rf x\"; rm -rf y # rm -rf z\necho \"a $(rm -rf q) ${v:-$(rm -rf w)}\"\n";
+    let dir = repo();
+    write(dir.path(), "scripts/run.bash", mixed);
+    assert_eq!(
+        agree(dir.path(), &no_rm(both()), &["--all-matches"], 1),
+        [(1, 18, 17), (2, 11, 47), (2, 28, 64)]
+    );
+    // Only the listed contexts are skipped.
+    assert_eq!(
+        agree(
+            dir.path(),
+            &no_rm(json!(["comment"])),
+            &["--all-matches"],
+            1
+        ),
+        [(1, 7, 6), (1, 18, 17), (2, 11, 47), (2, 28, 64)]
+    );
+    assert_eq!(
+        agree(dir.path(), &no_rm(json!(["string"])), &["--all-matches"], 1),
+        [(1, 18, 17), (1, 29, 28), (2, 11, 47), (2, 28, 64)]
+    );
+
+    // A heredoc body is data the script feeds somewhere, so it is never
+    // skipped, quoted delimiter or not. Tab-indented `<<-` closes normally.
+    let heredoc = "cat <<'EOF'\nrm -rf a # rm -rf b\nEOF\ncat <<-END\n\trm -rf c\n\tEND\n";
+    let dir = repo();
+    write(dir.path(), "scripts/h.sh", heredoc);
+    assert_eq!(
+        agree(dir.path(), &no_rm(both()), &["--all-matches"], 1),
+        [(2, 1, 12), (2, 12, 23), (5, 2, 48)]
+    );
+
+    // `#` inside a word does not start a comment, for bash or the grammar.
+    let word = "echo a#rm -rf x\n# a comment ending in \\\n# rm -rf y\n";
+    let dir = repo();
+    write(dir.path(), "scripts/w.sh", word);
+    assert_eq!(
+        agree(dir.path(), &no_rm(both()), &["--all-matches"], 1),
+        [(1, 8, 7)]
+    );
+}
+
+#[test]
+fn bash_constructs_the_grammar_reads_differently_cannot_be_judged() {
+    for (content, message) in [
+        // The grammar ends these heredocs at the indented, trailing-space or
+        // `;` line and reads the rest of the body as code; bash does not.
+        (
+            "cat <<EOF\n EOF\n# rm -rf a\nEOF\n",
+            "may end this heredoc elsewhere than the bash grammar near 1:5",
+        ),
+        (
+            "cat <<EOF\nx\nEOF \nrm -rf a\nEOF\n",
+            "may end this heredoc elsewhere than the bash grammar near 1:5",
+        ),
+        (
+            "cat <<EOF;\nx\nEOF;\nrm -rf a\n",
+            "may end this heredoc elsewhere than the bash grammar near 1:5",
+        ),
+        (
+            "cat <<-EOF\n  x\n  EOF\nrm -rf a\nEOF\n",
+            "may end this heredoc elsewhere than the bash grammar near 1:5",
+        ),
+        // A `\`-newline continuation joins `true` and `#`: bash runs `rm`.
+        (
+            "true\\\n# ; rm -rf a\n",
+            "does not start a comment at the # near 2:1",
+        ),
+        // The grammar reads these as blanks, bash as part of a word.
+        (
+            "true\r# ; rm -rf a\n",
+            "reads a carriage return, vertical tab or form feed as part of a word near 1:5",
+        ),
+        (
+            "echo x\ntrue\u{b}# ; rm -rf a\n",
+            "reads a carriage return, vertical tab or form feed as part of a word near 2:5",
+        ),
+        // Backquotes are one command_substitution node with $(...), but bash
+        // re-reads their text, so nested `\`` runs `rm` here.
+        (
+            "echo `echo \\`rm -rf a\\``\n",
+            "re-reads a backquoted `...` substitution with its own quoting rules near 1:6",
+        ),
+        ("rm -rf a\nif then\n", "cannot parse as Bash near"),
+    ] {
+        let dir = repo();
+        write(dir.path(), "scripts/a.sh", content);
+        let sha = commit(dir.path());
+        for args in [
+            vec!["check"],
+            vec!["check", "--all-matches", "--commit", &sha],
+        ] {
+            let (stdout, stderr) = run(cli(&args, &no_rm(json!(["comment"])), dir.path()), 2);
+            assert_eq!(stdout, "", "{content:?}");
+            assert!(
+                stderr.contains(&format!(
+                    "[scripts/no-rm-rf] scripts/a.sh: ignoreInside cannot classify the match: bash {message}"
+                )) || stderr.contains(&format!(
+                    "[scripts/no-rm-rf] scripts/a.sh: ignoreInside cannot classify the match: {message}"
+                )),
+                "{content:?}: {stderr}"
+            );
+        }
+    }
+
+    // Without a candidate there is nothing to classify.
+    let dir = repo();
+    write(dir.path(), "scripts/a.sh", "echo `date`\r\n");
+    commit(dir.path());
+    assert_eq!(
+        run(cli(&["check"], &no_rm(json!(["comment"])), dir.path()), 0).0,
+        ""
+    );
+
+    // The grammar covers .sh and .bash only.
+    write(dir.path(), "scripts/run", "rm -rf a\n");
+    commit(dir.path());
+    let (_, stderr) = run(cli(&["check"], &no_rm(json!(["comment"])), dir.path()), 2);
+    assert!(
+        stderr.contains(
+            "[scripts/no-rm-rf] scripts/run: ignoreInside for bash classifies .sh and .bash files only; narrow the path scope"
+        ),
+        "{stderr}"
+    );
+}

@@ -92,12 +92,12 @@
           }
         },
         "ignoreInside": {
-          "description": "Text rules only. Skips a pattern match that lies wholly inside one of the listed contexts of the file, parsed with the pinned grammar: a comment, or a string literal or the literal part of a template string. Each match is judged on its own, so a skipped one never hides a later match, and requires still searches the whole file. A file the grammar does not cover (TypeScript: .ts, .mts, .cts and .tsx) or that does not parse cannot be classified: when the pattern matches in it, the check exits 2. List a context once.",
+          "description": "Text rules only. Skips a pattern match that lies wholly inside one of the listed contexts of the file, parsed with the pinned grammar: a comment, or a string literal or the literal part of a template string (TypeScript) or of a double-quoted string (Bash). Each match is judged on its own, so a skipped one never hides a later match, and requires still searches the whole file. A file the grammar does not cover (TypeScript: .ts, .mts, .cts and .tsx; Bash: .sh and .bash) or that does not parse cannot be classified, nor can a Bash file with a construct the grammar reads differently from bash (a heredoc not closed by its exact delimiter line, a backquoted substitution, a carriage return, vertical tab or form feed, or a # that bash does not start a comment at): when the pattern matches in it, the check exits 2. List a context once.",
           "type": "object",
           "required": ["language", "contexts"],
           "additionalProperties": false,
           "properties": {
-            "language": { "enum": ["typescript"] },
+            "language": { "enum": ["typescript", "bash"] },
             "contexts": { "type": "array", "minItems": 1, "maxItems": 2, "items": { "enum": ["comment", "string"] } }
           }
         },

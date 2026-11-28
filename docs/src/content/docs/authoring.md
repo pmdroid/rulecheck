@@ -96,9 +96,24 @@ export default defineRule({
 });
 ```
 
-The filter applies to each match, not to the file. A skipped match never hides a later one, in the default first-match check, with `--all-matches` and in fixtures. `language` is `"typescript"`, the only language so far: `.ts`, `.mts` and `.cts` files parse with the TypeScript grammar and `.tsx` files with the TSX grammar. `contexts` lists `"comment"`, `"string"` or both, each once. A string context is a quoted string or the literal text of a template string, not a `${...}` substitution. With `requires`, only the `pattern` matches are filtered.
+The filter applies to each match, not to the file. A skipped match never hides a later one, in the default first-match check, with `--all-matches` and in fixtures. `language` is `"typescript"` or `"bash"`. With `"typescript"`, `.ts`, `.mts` and `.cts` files parse with the TypeScript grammar and `.tsx` files with the TSX grammar. With `"bash"`, `.sh` and `.bash` files parse with the pinned Bash grammar; see [Shell scripts](#shell-scripts) below. `contexts` lists `"comment"`, `"string"` or both, each once. A string context is a quoted string or the literal text of a template string, not a `${...}` substitution. With `requires`, only the `pattern` matches are filtered.
 
 The file is parsed only when the pattern matches in it. If it can't be classified, because it doesn't parse or the grammar doesn't cover its extension, `check` exits 2 and `test` reports the fixture as one that cannot be judged. Rulecheck never guesses whether such a match counts. Narrow `paths` to the files the grammar covers. Only text rules take `ignoreInside`. The builder rejects it on syntax and forbidden-path rules, and the baseline `matcher` digest includes it. Rulecheck releases from before `ignoreInside` reject a policy that uses it as an unknown field (exit 2), so update every evaluator that checks the repository, including the trusted base tools in CI, before you use it. The [cookbook recipe](../cookbook/#skip-matches-in-comments-and-strings) runs it.
+
+### Shell scripts
+
+With `language: "bash"`, `"comment"` covers `#` comments and `"string"` covers `'...'`, `$'...'` and the literal text of `"..."`. Inside double quotes, `$x`, `${...}`, `$((...))` and `$(...)` are code, so a match there is reported. A heredoc body is data the script passes to a command, so it is never a comment or a string, whether or not its delimiter is quoted. A `#` inside a word, as in `a#b` or `x=#y`, does not start a comment.
+
+The pinned grammar, tree-sitter-bash 0.25.1, mostly reads a script the way bash does, but it doesn't in a few places. In each one, the grammar can read code that bash runs as a comment or string. A file that has one of these constructs can't be classified, and `check` exits 2 once the pattern matches in it:
+
+- A heredoc that isn't closed by a line that is exactly its delimiter, after tabs only for `<<-`. The grammar also ends a heredoc at ` EOF`, `EOF ` or `EOF;`, then reads the rest of the body as code. The delimiter must be letters, digits and `_`, bare, `\`-escaped or in one pair of quotes.
+- A `#` that bash doesn't treat as the start of a word, such as one right after a `\`-newline continuation. For bash, `true\` followed by `# ; rm x` on the next line runs `rm x`. The grammar reads it as a comment.
+- A carriage return, vertical tab or form feed anywhere in the file. The grammar reads them as blanks, but bash reads them as part of a word, so `true` followed by a carriage return and `# ; rm x` runs `rm x`. Convert CRLF scripts to LF.
+- A backquoted `` `...` `` substitution. The grammar parses it into the same `command_substitution` node as `$(...)`, but bash re-reads backquoted text with its own escaping, so nested `` \` `` runs a command that the grammar reads as a word. Write `$(...)` instead.
+
+A string is skipped even when it holds code that a command runs later, as in `sh -c '...'`, `eval "..."` or `ssh host '...'`. The grammar can't tell which arguments a command executes, so `"string"` suits rules whose quoted mentions really are just text.
+
+Rulecheck also looked at classifying which command segment a match is in: the command name or its arguments, or the stage of a pipeline or list. The grammar gives each of these its own node (`command_name`, `command`, `pipeline`, `list`, `command_substitution`, `subshell`), so finding the segment is deterministic. Skipping by segment would not be fail-closed. Whether an argument runs depends on the command (`sudo rm`, `xargs rm`, `env rm`, `find -exec rm`), and nothing in the parse tree shows that. Backquoted and `$(...)` substitutions also share one node kind. So `ignoreInside` offers no segment contexts.
 
 ## Record where a rule came from
 

@@ -125,6 +125,9 @@ const recipes = {
   "ignore-inside": recipe({ "src/run.ts": "// eval(code) is banned here\nexport const note = \"never eval(code)\";\n" },
     { "src/run.ts": "// eval(code) is banned here\nexport const run = (code: string) => eval(code);\n" },
     "src/run.ts:2:38: [source/no-eval] Parse the input instead of calling eval."),
+  "ignore-inside-bash": recipe({ "scripts/release.sh": "#!/bin/sh\n# git push --force is banned here\necho \"never git push -f\"\n" },
+    { "scripts/release.sh": "#!/bin/sh\n# git push --force is banned here\ngit push --force origin main\n" },
+    "scripts/release.sh:3:1: [scripts/no-force-push] Push with --force-with-lease, or open a pull request."),
 };
 
 function run(bin, args, { cwd, input, status = 0 } = {}) {
@@ -235,6 +238,17 @@ for (const [name, { clean, bad, finding, args: flags }] of Object.entries(recipe
       const broken = run(evaluator, ["check", "--root", cwd], { input, cwd, status: 2 });
       assert.equal(broken.stdout, "");
       assert.match(broken.stderr, /\[source\/no-eval\] src\/run\.ts: ignoreInside cannot classify the match: cannot parse as TypeScript near 2:/);
+    }
+    if (name === "ignore-inside-bash") {
+      // The exact commit classifies the same bytes the same way. A heredoc
+      // that bash closes elsewhere than the grammar cannot be classified.
+      git("-c", "user.name=Rulecheck", "-c", "user.email=rulecheck@example.invalid",
+        "-c", "commit.gpgsign=false", "commit", "-qm", "Force push");
+      scan({ expected: finding, sha: git("rev-parse", "HEAD") });
+      write({ "scripts/release.sh": "cat <<EOF\n EOF\n# git push --force\nEOF\n" });
+      const unclosed = run(evaluator, ["check", "--root", cwd], { input, cwd, status: 2 });
+      assert.equal(unclosed.stdout, "");
+      assert.match(unclosed.stderr, /\[scripts\/no-force-push\] scripts\/release\.sh: ignoreInside cannot classify the match: bash may end this heredoc elsewhere than the bash grammar near 1:5/);
     }
     if (name === "scope") {
       write(clean);
