@@ -3,11 +3,11 @@ title: CLI reference
 description: Rulecheck commands, exit codes, and scan scope.
 ---
 
-The installed `rulecheck` command builds policy from `.rulecheck/rules/**/*.rule.ts` in the selected checkout and pipes it to the evaluator. `--root DIR` picks the checkout root, which defaults to the current directory. Run from the checkout root or pass `--root`: a subdirectory exits 2 and the message names the root to pass. `--commit SHA` reads rules and files from a full commit instead. `--untracked` adds untracked files that Git doesn't ignore to a working-tree check.
+The installed `rulecheck` command builds policy from `.rulecheck/rules/**/*.rule.ts` in the selected checkout and pipes it to the evaluator. `--root DIR` picks the checkout root, which defaults to the current directory. Run from the checkout root or pass `--root`: a subdirectory exits 2 and the message names the root to pass. `--commit SHA` reads rules and files from a full commit instead. `--untracked` adds untracked files that Git doesn't ignore to a working-tree check. `--all-matches` makes `check` report every text match instead of the first per rule and file; see [Every match](#every-match).
 
 | Command | Purpose |
 | --- | --- |
-| `rulecheck check [--root DIR] [--commit SHA \| --untracked] [--format human\|json]` | Scan working-tree files tracked by Git (plus non-ignored untracked files with `--untracked`), or inspect exact committed blobs. |
+| `rulecheck check [--root DIR] [--commit SHA \| --untracked] [--all-matches] [--format human\|json]` | Scan working-tree files tracked by Git (plus non-ignored untracked files with `--untracked`), or inspect exact committed blobs. |
 | `rulecheck test [--root DIR] [--commit SHA]` | Run rule fixtures. |
 | `rulecheck list [--root DIR] [--commit SHA]` | List rule IDs in sorted order. |
 | `rulecheck validate [--root DIR] [--commit SHA]` | Check policy syntax, rule IDs, globs, and patterns. |
@@ -20,7 +20,7 @@ The installed `rulecheck` command builds policy from `.rulecheck/rules/**/*.rule
 | --- | --- |
 | 0 | Successful command; no violations or fixture mismatches. |
 | 1 | One or more findings or fixture mismatches. |
-| 2 | Could not judge, such as an invalid rule file, a builder failure, unreadable text, a file in a syntax rule's scope that doesn't parse, or a text or syntax rule matching no files. |
+| 2 | Could not judge, such as an invalid rule file, a builder failure, unreadable text, a file in a syntax rule's scope that doesn't parse, a text or syntax rule matching no files, or a syntax rule selected with `--all-matches`. |
 
 Findings and fixture mismatches go to stdout, one per line. Exit 2 diagnostics go to stderr. `validate` prints nothing on success, and `test` prints a count such as `4 fixtures passed`. Running `rulecheck` with no command prints the usage to stderr and exits 2, so a script that drops its command never reads as clean.
 
@@ -39,7 +39,37 @@ The evaluator still checks limits, rule IDs, globs, regex syntax, and syntax sel
 rulecheck check --commit "$(git rev-parse HEAD)"
 ```
 
-Each rule reports at most one finding per file, at its first match. This is the v1 contract: further matches in the same file are not reported until the first is fixed, and reporting every match is reserved for a later flag or contract version because it would change finding counts. Columns count Unicode scalar values, not bytes; forbidden paths use `1:1`. Narrow broad globs if the scanner reports an input limit.
+By default each rule reports at most one finding per file, at its first match. This is the v1 contract: further matches in the same file are not reported until the first is fixed. Pass `--all-matches` to count every text match instead; without it, output is unchanged. Columns count Unicode scalar values, not bytes; forbidden paths use `1:1`. Narrow broad globs if the scanner reports an input limit.
+
+## Every match
+
+`rulecheck check --all-matches` reports one finding for every match of a text rule in a file, so a file with three `TODO` markers gives three findings rather than one. Use it when the number of violations per file matters, such as to compare counts between two commits. The default first-match output can show one finding for a file whose count has grown.
+
+```text
+$ rulecheck check --all-matches
+src/app.ts:1:4: [source/no-todo-markers] Resolve the marker or move it to the issue tracker.
+src/app.ts:1:12: [source/no-todo-markers] Resolve the marker or move it to the issue tracker.
+src/app.ts:2:11: [source/no-todo-markers] Resolve the marker or move it to the issue tracker.
+```
+
+The matches are deterministic, and the working tree and `--commit` report the same matches for the same file contents:
+
+- **Literal patterns** are searched left to right without overlap: after a match, the search resumes at its end. `aa` matches `aaaaa` at columns 1 and 3, not 1, 2, 3 and 4.
+- **Regex patterns** use the same Rust `regex` engine as first-match mode, through its `find_iter`. Each match is the leftmost-first one, which follows alternation order rather than taking the longest: `a|ab` matches `abab` at columns 1 and 3, each one byte long. Matches don't overlap.
+- **Zero-width regex matches** such as `(?m)^` or `\b` are reported, with `byteStart` equal to `byteEnd`. An empty match never splits a UTF-8 character. An empty match that starts where the previous match ended is skipped, so `a*` on `baaab` reports columns 1 (empty), 2 (`aaa`) and 6 (empty at the end), not an empty match at column 5.
+- **Positions** are the same as in first-match mode: a one-based line and Unicode scalar column, plus the zero-based, half-open UTF-8 byte range in JSON. The first all-match finding of a rule in a file is always the finding that first-match mode reports.
+- **Order** is path, then line and column, then rule ID, as in first-match mode. When two rules match at the same position, both are listed in rule ID order.
+- **Forbidden-path rules** still report at most one finding per path, at `1:1`.
+- **Syntax rules** are not counted yet. Rulecheck hasn't defined how nested or repeated nodes would be counted, and reporting only their first match would undercount. If any selected rule is a syntax rule, `--all-matches` exits 2 before reading files and names the rule. Select only text and forbidden-path rules with `--id-prefix`, or drop the flag.
+- **The findings cap** is still 10,000 per scan. A scan with more matches exits 2 with no findings listed, so narrow the scope instead of reading a partial count.
+
+`--all-matches` works with `--commit`, `--untracked`, `--id-prefix` and both output formats. It applies to `check` only; `rulecheck test` checks each fixture in the mode its expectation names. See [count every match](../cookbook/#count-every-match) for `expectAll` fixtures.
+
+### Compatibility
+
+The flag is opt-in, and no default changes. Without it, the human lines, the JSON document, the finding counts and the fixture format are the same as before. The policy schema is still version 1, and the result document is still `resultVersion` 1. The result adds `source.matches: "all"` only when the flag is passed, the same way `source.untracked` appears only with `--untracked`. A consumer that compares counts should reject a result without `source.matches`, because that result holds first matches only.
+
+`expectAll` is a new, optional fixture field. Rulecheck releases before it reject a policy that uses it, as they reject any unknown field, and so do releases without `--all-matches`. Rules that use only `expect` build the same policy bytes as before.
 
 ## Machine-readable results
 
@@ -81,11 +111,11 @@ The contract:
 
 - `resultVersion` is 1. It versions this document separately from the policy `version`. Reject a version you don't know.
 - `exitCode` always equals the process exit status, and `outcome` names it: `pass` (0), `violation` (1) or `error` (2).
-- Findings are sorted by path, then line and column, then rule ID. `line` and `column` are the one-based values from human output, with columns counted in Unicode scalar values. `byteStart` and `byteEnd` are the zero-based, half-open UTF-8 byte range of the first match in the file, so `file[byteStart..byteEnd]` is the matched text. Forbidden-path findings have no text and report `null` for both.
+- Findings are sorted by path, then line and column, then rule ID. `line` and `column` are the one-based values from human output, with columns counted in Unicode scalar values. `byteStart` and `byteEnd` are the zero-based, half-open UTF-8 byte range of the match, so `file[byteStart..byteEnd]` is the matched text. By default that is the rule's first match in the file; with `--all-matches` there is one finding per match. Forbidden-path findings have no text and report `null` for both.
 - `diagnostics` lists each reason the check could not judge, as `{ ruleId, message }`. `ruleId` is set for an empty text scope and `null` otherwise. Any diagnostic makes the outcome `error`.
 - After an empty text scope, the findings for the other rules are complete and still listed. When a scan stops early, for example on an unreadable file or an input limit, `findings` is empty. Never treat an `error` result as clean.
 - `policy.sha256` is the SHA-256 of the exact policy bytes the evaluator read. It is `null` when the policy could not be read. It differs from the shadow evidence's effective-policy digest, which hashes a canonical form. `policy.version` is `null` when the policy is invalid. `policy.ruleIds` lists the rules selected after `--id-prefix`.
-- `source.mode` is `commit` with the exact `--commit` SHA, or `working-tree` with `commit: null`. A working-tree scan includes unstaged edits, so no commit describes it exactly. `source.untracked` is `true` when `--untracked` was passed and absent otherwise, so results without the flag keep the shape shown above.
+- `source.mode` is `commit` with the exact `--commit` SHA, or `working-tree` with `commit: null`. A working-tree scan includes unstaged edits, so no commit describes it exactly. `source.untracked` is `true` when `--untracked` was passed and absent otherwise, so results without the flag keep the shape shown above. `source.matches` is `"all"` when `--all-matches` was passed and absent otherwise.
 - `tools.evaluator` is the evaluator version. The installed `rulecheck` command sets `tools.builder`. The low-level evaluator reports `null` because it reads policy from stdin.
 - If the builder fails, the installed command still writes an error result. It carries the builder's messages as diagnostics and `null` policy fields. Invalid arguments, including a short `--commit` value, `--untracked` with `--commit`, or a `--root` that is not the checkout root, produce no document, only a usage message and exit 2. Treat a missing or unparsable document as `error`.
 

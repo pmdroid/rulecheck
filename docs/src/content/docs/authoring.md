@@ -5,7 +5,7 @@ description: Define, test, and retire a rule safely.
 
 1. Copy a tested rule from the Rule cookbook into `.rulecheck/rules/`. Nested directories work. Files must end in `.rule.ts`.
 2. Choose a stable lowercase ID such as `config/no-debug-true`, repository-relative `paths` globs, an optional `exclude` list for files to leave out, and a concrete remediation. Optionally link the review finding that led to the rule with [`provenance`](#record-where-a-rule-came-from).
-3. Add at least one fixture that finds the bug and one that passes. A finding uses exact one-based line and column; `null` means no finding. Add a fixture outside the scope if the scope matters.
+3. Add at least one fixture that finds the bug and one that passes. `expect` takes the first finding's exact one-based line and column; `null` means no finding. A text fixture can use `expectAll: [{ line, column }, ...]` instead, to assert every match that `check --all-matches` reports, in ascending order ([example](../cookbook/#count-every-match)). Add a fixture outside the scope if the scope matters.
    Fixtures are virtual: `rulecheck test` checks each fixture's `content` as if it lived at its `path`, without reading the working tree or the Git index. The fixture `path` is matched against the rule's `paths`, so a fixture at an out-of-scope path with `expect: null` proves the scope excludes it.
 4. Type-check against the SDK, validate the built policy, and run the fixtures. Inspect findings in a representative checkout before making a rule authoritative.
 
@@ -18,6 +18,12 @@ A fixture mismatch exits 1 and prints one line per failing fixture on stdout. Th
 
 ```text
 src/lib/math.ts:2:3: [source/no-console-log] fixture 1 expected a violation at 2:4, found a violation at 2:3. Use the logger instead. Update the rule or fixture.
+```
+
+An `expectAll` mismatch starts with the first position where the lists differ and shows both lists, up to 16 positions each:
+
+```text
+src/lib/math.ts:4:3: [source/no-console-log] fixture 2 expected 1 violation at 2:3, found 2 violations at 2:3, 4:3. Use the logger instead. Update the rule or fixture.
 ```
 
 ## Record where a rule came from
