@@ -167,10 +167,10 @@ fn exclude_removes_files_from_checks_and_fixtures() {
 fn exclude_is_validated_like_paths() {
     let root = Path::new(ROOT);
     for (exclude, message) in [
-        (json!([]), "provide 1 to 16 exclude globs or omit exclude"),
+        (json!([]), "provide 1 to 64 exclude globs or omit exclude"),
         (
-            json!(vec!["a"; 17]),
-            "provide 1 to 16 exclude globs or omit exclude",
+            json!(vec!["a"; 65]),
+            "provide 1 to 64 exclude globs or omit exclude",
         ),
         (json!(null), "invalid policy JSON"),
         (json!("src/**"), "invalid policy JSON"),
@@ -507,6 +507,7 @@ fn schema_sdk_and_evaluator_accept_the_same_rule_fields() {
         fields,
         [
             "exclude",
+            "excludeSets",
             "fixtures",
             "id",
             "kind",
@@ -515,7 +516,8 @@ fn schema_sdk_and_evaluator_accept_the_same_rule_fields() {
             "provenance",
             "remediation",
             "requires",
-            "selector"
+            "selector",
+            "skipIfContent"
         ]
     );
     assert_eq!(
@@ -541,6 +543,12 @@ fn schema_sdk_and_evaluator_accept_the_same_rule_fields() {
         "id: string;",
         "paths: readonly string[];",
         "exclude?: readonly string[];",
+        "excludeSets?: readonly string[];",
+        "skipIfContent?: SkipIfContent;",
+        "skipIfContent?: never;",
+        "kind: \"literal\" | \"regex\";\n  value: string;\n  firstBytes: number;",
+        "version: 1;\n  globs: readonly string[];\n  include?: readonly string[];",
+        "export declare function defineGlobSet(set: GlobSet): GlobSet;",
         "provenance?: { finding: string };",
         "remediation: string;",
         "kind: \"text\";",

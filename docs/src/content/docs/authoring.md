@@ -4,7 +4,7 @@ description: Define, test, and retire a rule safely.
 ---
 
 1. Copy a tested rule from the Rule cookbook into `.rulecheck/rules/`. Nested directories work. Files must end in `.rule.ts`.
-2. Choose a stable lowercase ID such as `config/no-debug-true`, repository-relative `paths` globs, an optional `exclude` list for files to leave out, and a concrete remediation. Optionally link the review finding that led to the rule with [`provenance`](#record-where-a-rule-came-from).
+2. Choose a stable lowercase ID such as `config/no-debug-true`, repository-relative `paths` globs, an optional `exclude` list or [`excludeSets`](#reusable-exclusion-sets-and-content-skips) for files to leave out, and a concrete remediation. Optionally link the review finding that led to the rule with [`provenance`](#record-where-a-rule-came-from).
 3. Add at least one fixture that finds the bug and one that passes. `expect` takes the first finding's exact one-based line and column; `null` means no finding. A text fixture can use `expectAll: [{ line, column }, ...]` instead, to assert every match that `check --all-matches` reports, in ascending order ([example](../cookbook/#count-every-match)). Add a fixture outside the scope if the scope matters.
    Fixtures are virtual: `rulecheck test` checks each fixture's `content` as if it lived at its `path`, without reading the working tree or the Git index. The fixture `path` is matched against the rule's `paths`, so a fixture at an out-of-scope path with `expect: null` proves the scope excludes it.
 4. Type-check against the SDK, validate the built policy, and run the fixtures. Inspect findings in a representative checkout before making a rule authoritative.
@@ -65,6 +65,64 @@ export default defineRule({
 Matching ignores `provenance`. A rule finds the same files and lines with or without it, fixtures run the same way, and findings in human or `--format json` output don't include it. It is still part of the rule, so the policy bytes and the shadow workflow's policy digest change when you add or edit it, and the rule is listed as changed in `effectivePolicyDiff`. Policies without `provenance` build exactly as before.
 
 Rulecheck releases from before `provenance` reject a policy that uses it as an unknown field (exit 2). Before you add it, make sure every evaluator that checks the repository, including the trusted base tools in CI, is a release that supports it.
+
+## Reusable exclusion sets and content skips
+
+A rule can leave files out in three ways. They run in this order, in `rulecheck check` and `rulecheck test` alike:
+
+1. `paths` puts a file in scope.
+2. `exclude` and `excludeSets` take it out by path. Rulecheck doesn't open a file excluded this way, so an excluded file can't make the scan fail.
+3. `skipIfContent` takes out a file that is still in scope, based on its first bytes.
+
+### Named exclusion sets
+
+Put a list of exclusion globs that several rules share in `.rulecheck/sets/<name>.set.ts`:
+
+```ts
+import { defineGlobSet } from "@pmdroid/rulecheck";
+
+export default defineGlobSet({
+  version: 1,
+  globs: ["**/__generated__/**", "**/*.pb.ts"],
+  include: ["third-party"],
+});
+```
+
+The file name is the set's name: `generated.set.ts` is `generated`, and `web/vendor.set.ts` is `web/vendor`. Names use lowercase letters, digits and hyphens. A rule adds a set's globs to its `exclude` with `excludeSets: ["generated"]`. `include` adds the globs of other sets. A path matching any resolved glob is out of scope. Lists have no order or precedence, so a later set can't put a file back in scope.
+
+Set files follow the same static subset as rule files: one import of `defineGlobSet`, literal `const` declarations and one `export default defineGlobSet({...})`. The builder parses them without running them, and a rule can't `import` a set. With `--commit`, the builder reads sets and rules from the same commit tree. A working-tree build reads both from the checkout. A set added only to the working tree is unknown to a commit build, which fails at the `excludeSets` entry that names it. The builder also rejects a `.rulecheck/sets` that is a symlink or a nested repository. `version: 1` is the only set version.
+
+Limits, checked when the policy loads (exit 2):
+
+| Limit | Value |
+| --- | --- |
+| `paths` and `exclude` globs per rule | 1 to 64 each (16 before sets) |
+| Globs per set | up to 256, each up to 256 bytes |
+| Sets per policy | 64 |
+| Names in `excludeSets` or `include` | 1 to 16, no duplicates |
+| Include depth | 4 levels, counting the set a rule names |
+| Include cycles | rejected, with the cycle path |
+| Distinct exclusion globs per rule after resolving sets | 256 |
+| `paths` plus resolved exclusion globs over all rules | 4096 |
+
+Every set is checked even when no rule uses it. Shared globs and a set reached twice count once. The caps come from timing `globset` on 200,000 synthetic paths: matching cost grows about linearly with the glob count, from 0.16 µs per path at 16 globs to 0.28 µs at 64 and 0.86 µs at 256. The policy-wide total bounds the work per path.
+
+### Skip files by content
+
+`skipIfContent` skips an in-scope file whose first `firstBytes` bytes contain a `literal` or match a Rust `regex`, for example a generated-file header:
+
+```ts
+skipIfContent: { kind: "regex", value: "^// @generated", firstBytes: 64 },
+```
+
+- Only text and syntax rules accept it, because forbidden-path rules never read content.
+- `firstBytes` is required, from 1 to 65536. Rulecheck checks the predicate against those bytes only. A match must end inside them, and the cut can fall inside a multi-byte character.
+- A syntax rule skips the file before parsing it, so a generated file that doesn't parse is skipped instead of failing.
+- Fixtures go through the same check. A fixture whose `content` starts with the header expects `null`.
+- The predicate only sees content that Rulecheck has read. A file in scope that can't be read still can't be judged and the check exits 2, even if its header would match. That covers a symlink, a file over 1 MiB and a file that isn't UTF-8. A file read for the predicate also counts toward `check --text-budget`: when it would exceed the budget, the scan stops before the predicate runs and reports the rule as not evaluated.
+- A skipped file counts as out of scope. A text rule whose every in-scope file is skipped has an empty scope, and the check exits 2.
+
+Policies without `excludeSets`, `skipIfContent` or set files build exactly as before. Releases from before these fields reject them as unknown (exit 2). Before you use them, make sure every evaluator that checks the repository supports them, including the trusted base tools in CI.
 
 ## Syntax rules
 
