@@ -165,9 +165,10 @@ fn an_ignored_occurrence_does_not_hide_a_later_match() {
         "src/run.ts",
         "// eval(old)\nconst s = \"eval(\"; eval(s);\n",
     );
+    // `agree` commits the file first: a working-tree check reads tracked files only.
+    assert_eq!(agree(root, &rule(), &[], 1), [(2, 20, 32)]);
     let (stdout, _) = run(cli(&["check"], &rule(), root), 1);
     assert_eq!(stdout, finding("src/run.ts", 2, 20));
-    assert_eq!(agree(root, &rule(), &[], 1), [(2, 20, 32)]);
 
     // A substitution in a template string is code: its call is reported,
     // while the template's literal text before it is not.
