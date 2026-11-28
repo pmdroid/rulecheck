@@ -21,6 +21,10 @@ rule command, Rulecheck installs its pinned TypeScript compiler into a user cach
 Later runs reuse the cache. No project `npm install`, separate CLI build step, or
 generated policy file is needed. Keep the two installed executables together.
 
+To install without Rust, download a checksummed native archive for Linux x86-64 or
+macOS on Apple silicon from a GitHub release, directly or with mise, as described in
+[Install from release archives](../install/).
+
 ## Set up the compiler from a mirror or offline
 
 The first-run setup reads its settings only from the environment of whoever runs

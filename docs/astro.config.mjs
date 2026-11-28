@@ -12,6 +12,7 @@ export default defineConfig({
       sidebar: [
         { label: "Overview", slug: "" },
         { label: "Quickstart", slug: "quickstart" },
+        { label: "Install from release archives", slug: "install" },
         { label: "Authoring rules", slug: "authoring" },
         { label: "Rule cookbook", slug: "cookbook" },
         { label: "CLI reference", slug: "cli" },
