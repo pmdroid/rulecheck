@@ -54,6 +54,10 @@ test("Cargo-installed frontend evaluates rules with a pinned compiler", { skip: 
   assert.equal(result.findings[0].ruleId, "config/no-legacy-mode");
   assert.match(result.tools.builder, /TypeScript 5\.9\.3/);
   assert.equal(run(cli, ["check", "--commit", sha], 0, warm).stdout, "");
+  // --text-budget passes through the installed frontend for both scan modes.
+  const budgeted = JSON.parse(run(cli, ["check", "--commit", sha, "--text-budget", "1", "--format", "json"], 0, warm).stdout);
+  assert.equal(budgeted.source.textBudgetMiB, 1);
+  assert.match(run(cli, ["check", "--text-budget", "0"], 2, warm).stderr, /--text-budget requires a whole number of MiB from 1 to 1024/);
   write(".rulecheck/rules/broken.rule.ts", "export const x = 1;\n");
   const invalid = JSON.parse(run(cli, ["check", "--format", "json"], 2, warm).stdout);
   assert.equal(invalid.outcome, "error");
