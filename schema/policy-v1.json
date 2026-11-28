@@ -91,12 +91,12 @@
       }
     },
     "selector": {
-      "description": "Selects nodes of one named tree-sitter node kind. typescript parses .ts, .mts and .cts files with the TypeScript grammar and .tsx files with the TSX grammar, and Rulecheck checks node kinds and fields against both. rust parses .rs files with the Rust grammar.",
+      "description": "Selects nodes of one named tree-sitter node kind. typescript parses .ts, .mts and .cts files with the TypeScript grammar and .tsx files with the TSX grammar, and Rulecheck checks node kinds and fields against both. rust parses .rs files with the Rust grammar, go parses .go files with the Go grammar, and python parses .py and .pyi files with the Python grammar.",
       "type": "object",
       "required": ["language", "node"],
       "additionalProperties": false,
       "properties": {
-        "language": { "enum": ["typescript", "rust"] },
+        "language": { "enum": ["typescript", "rust", "go", "python"] },
         "node": { "type": "string", "minLength": 1, "maxLength": 128 },
         "inside": {
           "type": "object",

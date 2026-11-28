@@ -60,6 +60,15 @@ const recipes = {
     "src/lib.rs": '//! Totals for the report.\n/// Sums the values.\npub fn total(xs: &[i32]) -> i32 {\n    // TODO: overflow check\n    let sep = "// none";\n    let _ = sep;\n    xs.iter().sum()\n}\n\npub fn read(p: *const i32) -> i32 {\n    // SAFETY: callers pass a valid pointer.\n    unsafe { *p }\n}\n',
   }, { "src/lib.rs": "pub fn total(xs: &[i32]) -> i32 {\n    // add them up\n    xs.iter().sum()\n}\n" },
   "src/lib.rs:2:5: [source/no-rust-function-body-comments] Move the explanation out of the function body or into a name."),
+  "syntax-go": recipe({
+    "report/total.go": '// Package report sums values.\npackage report\n\n// Total sums the values.\nfunc Total(xs []int) int {\n\tsep := "// none"\n\t_ = sep\n\t// TODO: overflow check\n\tsum := 0\n\tfor _, x := range xs {\n\t\tsum += x\n\t}\n\treturn sum\n}\n',
+    "vendor/lib/lib.go": "package lib\n\nfunc f() {\n\t// vendored\n}\n",
+  }, { "report/total.go": "package report\n\nfunc Total(xs []int) int {\n\t// add them up\n\tsum := 0\n\tfor _, x := range xs {\n\t\tsum += x\n\t}\n\treturn sum\n}\n" },
+  "report/total.go:4:2: [source/no-go-function-body-comments] Move the explanation out of the function body or into a name."),
+  "syntax-python": recipe({
+    "src/app/total.py": '# Totals for the report.\ndef total(xs):\n    """Sum the values. # is not a comment here."""\n    sep = "# none"\n    # TODO: overflow check\n    return sum(xs)  # type: ignore[arg-type]\n',
+  }, { "src/app/total.py": "def total(xs):\n    # add them up\n    return sum(xs)\n" },
+  "src/app/total.py:2:5: [source/no-python-function-comments] Move the explanation into a docstring or a name."),
 };
 
 function run(bin, args, { cwd, input, status = 0 } = {}) {

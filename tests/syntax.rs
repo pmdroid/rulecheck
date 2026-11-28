@@ -1,8 +1,8 @@
 //! Pins the `syntax` rule kind: the TypeScript/TSX comment selector from the
 //! cookbook, a second rule that reuses it with no evaluator change, a shadow
 //! comparison against the existing regex text checker, files that cannot be
-//! judged, and the exact parser and grammar versions. The Rust recipe pins the
-//! same selector over the second language.
+//! judged, and the exact parser and grammar versions. The Rust, Go and Python
+//! recipes pin the same selector over the other languages.
 mod common;
 
 use serde_json::{Value, json};
@@ -15,6 +15,8 @@ const ROOT: &str = env!("CARGO_MANIFEST_DIR");
 const COMMENTS: &str = include_str!("../docs/examples/rules/syntax.rule.ts");
 const REUSE: &str = include_str!("../docs/examples/rules/syntax-reuse.rule.ts");
 const RUST: &str = include_str!("../docs/examples/rules/syntax-rust.rule.ts");
+const GO: &str = include_str!("../docs/examples/rules/syntax-go.rule.ts");
+const PYTHON: &str = include_str!("../docs/examples/rules/syntax-python.rule.ts");
 
 fn cli(args: &[&str], policy: &[u8], root: &Path) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_rulecheck-evaluator"))
@@ -427,8 +429,8 @@ fn selector_names_are_checked_against_both_grammars() {
             "invalid selector ignore regex",
         ),
         (
-            json!({ "language": "go", "node": "comment" }),
-            "unknown variant `go`, expected `typescript` or `rust`",
+            json!({ "language": "ruby", "node": "comment" }),
+            "unknown variant `ruby`, expected one of `typescript`, `rust`, `go`, `python`",
         ),
         (
             // Rust has line_comment and block_comment, no plain comment kind.
@@ -448,6 +450,38 @@ fn selector_names_are_checked_against_both_grammars() {
             json!({ "language": "rust", "node": "line_comment",
                     "inside": { "kinds": ["function_item"], "field": "bdy" } }),
             "selector inside.field \"bdy\" is not a field in every Rust grammar",
+        ),
+        (
+            json!({ "language": "go", "node": "line_comment" }),
+            "selector node \"line_comment\" is not a named node kind in every Go grammar",
+        ),
+        (
+            json!({ "language": "go", "node": "comment",
+                    "inside": { "kinds": ["function_definition"] } }),
+            "selector inside kind \"function_definition\" is not a named node kind in every Go grammar",
+        ),
+        (
+            json!({ "language": "go", "node": "comment",
+                    "inside": { "kinds": ["function_declaration"], "field": "bdy" } }),
+            "selector inside.field \"bdy\" is not a field in every Go grammar",
+        ),
+        (
+            json!({ "language": "python", "node": "block_comment" }),
+            "selector node \"block_comment\" is not a named node kind in every Python grammar",
+        ),
+        (
+            json!({ "language": "python", "node": "comment",
+                    "inside": { "kinds": ["func_literal"] } }),
+            "selector inside kind \"func_literal\" is not a named node kind in every Python grammar",
+        ),
+        (
+            json!({ "language": "python", "node": "comment",
+                    "inside": { "kinds": ["function_definition"], "field": "bdy" } }),
+            "selector inside.field \"bdy\" is not a field in every Python grammar",
+        ),
+        (
+            json!({ "language": "typescript", "node": "func_literal" }),
+            "selector node \"func_literal\" is not a named node kind in every TypeScript grammar",
         ),
         (
             json!({ "language": "typescript", "node": "comment", "query": "(comment)" }),
@@ -474,6 +508,8 @@ fn parser_and_grammar_versions_are_pinned() {
         ("tree-sitter", "0.27.2"),
         ("tree-sitter-typescript", "0.23.2"),
         ("tree-sitter-rust", "0.24.2"),
+        ("tree-sitter-go", "0.25.0"),
+        ("tree-sitter-python", "0.25.0"),
     ] {
         assert!(
             manifest.contains(&format!("\n{name} = \"={version}\"\n")),
@@ -593,6 +629,250 @@ fn rust_files_the_grammar_cannot_parse_cannot_be_judged() {
     let error = run(cli(&["check"], &rule, root), 2);
     assert!(
         error.contains("src/a.ts: syntax rules for rust apply to .rs files; narrow the path scope"),
+        "{error}"
+    );
+}
+
+#[test]
+fn go_and_python_recipes_pass_their_fixtures_and_match_the_schema() {
+    let schema: Value = serde_json::from_str(include_str!("../schema/policy-v1.json")).unwrap();
+    for (name, source, count, language) in [
+        ("syntax-go.rule.ts", GO, 12, "go"),
+        ("syntax-python.rule.ts", PYTHON, 11, "python"),
+    ] {
+        let (repo, policy) = repo_with(&[(name, source)]);
+        assert_eq!(
+            run(cli(&["test"], &policy, repo.path()), 0),
+            format!("{count} fixtures passed\n")
+        );
+        let value: Value = serde_json::from_slice(&policy).unwrap();
+        assert_eq!(common::violations(&schema, &value), Vec::<String>::new());
+        let selector = &value["rules"][0]["selector"];
+        assert_eq!(selector["language"], language);
+        assert_eq!(selector["node"], "comment");
+    }
+}
+
+/// Go and Python files with real comments beside comment-like strings, and
+/// non-ASCII text before each finding, checked from the working tree and from
+/// the commit. Lines are one-based and columns count Unicode scalars, while
+/// byte ranges count UTF-8 bytes.
+#[test]
+fn go_and_python_selectors_report_the_first_real_comment_per_file() {
+    let (repo, policy) = repo_with(&[("syntax-go.rule.ts", GO), ("syntax-python.rule.ts", PYTHON)]);
+    let root = repo.path();
+    write(
+        root,
+        "report/strings.go",
+        "package report\n\n// Label names the total.\nfunc Label() string {\n\ta := \"// no\"\n\tb := `/* no\n// no */`\n\treturn a + b\n}\n",
+    );
+    write(
+        root,
+        "report/unicode.go",
+        "package report\n\nfunc Größe() string {\n\ts := \"π/2 ü\" /* ½ */ // why\n\treturn s\n}\n",
+    );
+    write(
+        root,
+        "report/nested.go",
+        "package report\n\nfunc Each(xs []int, f func(int)) {\n\tfor _, x := range xs {\n\t\tgo func() {\n\t\t\t//nolint:errcheck\n\t\t\tf(x) // call\n\t\t}()\n\t}\n}\n",
+    );
+    write(
+        root,
+        "vendor/lib/lib.go",
+        "package lib\n\nfunc f() {\n\t// vendored\n}\n",
+    );
+    write(
+        root,
+        "src/app/strings.py",
+        "# Module header.\ndef label(x):\n    \"\"\"Docs with # inside.\"\"\"\n    a = \"# no\"\n    b = f\"{x} # no\"\n    return a + b\n",
+    );
+    write(
+        root,
+        "src/app/unicode.py",
+        "def größe(π):\n    s = \"ü # no\"  # ½ why\n    return s\n",
+    );
+    write(
+        root,
+        "src/app/lead.py",
+        "class Box:\n    def size(self):\n        # leading\n        return 1\n",
+    );
+    write(
+        root,
+        "src/app/types.pyi",
+        "def size() -> int: ...  # stub\n",
+    );
+    git(root, &["add", "-A"]);
+    let working = run(cli(&["check", "--format", "json"], &policy, root), 1);
+    let sha = commit(root);
+    let committed = run(
+        cli(
+            &["check", "--commit", &sha, "--format", "json"],
+            &policy,
+            root,
+        ),
+        1,
+    );
+    let go = "source/no-go-function-body-comments";
+    let python = "source/no-python-function-comments";
+    let expected = vec![
+        (go.into(), "report/nested.go".into(), 7, 9, 118, 125),
+        (go.into(), "report/unicode.go".into(), 4, 15, 56, 64),
+        (python.into(), "src/app/lead.py".into(), 3, 9, 39, 48),
+        (python.into(), "src/app/types.pyi".into(), 1, 25, 24, 30),
+        (python.into(), "src/app/unicode.py".into(), 2, 19, 36, 44),
+    ];
+    assert_eq!(findings(&working), expected);
+    assert_eq!(findings(&committed), expected);
+    for (_, path, _, _, start, end) in &expected {
+        let content = fs::read_to_string(root.join(path)).unwrap();
+        assert!(content[*start as usize..*end as usize].starts_with(['/', '#']));
+    }
+
+    // Syntax rules keep the first-match default: --all-matches refuses them.
+    let error = run(cli(&["check", "--all-matches"], &policy, root), 2);
+    assert!(
+        error.contains("--all-matches does not support syntax rules"),
+        "{error}"
+    );
+}
+
+#[test]
+fn go_and_python_files_the_grammar_cannot_parse_cannot_be_judged() {
+    for (language, extension, fixture, clean, bad, near, other) in [
+        (
+            "go",
+            "go",
+            "// c\npackage p\n",
+            "package p\n",
+            "package p\n\nfunc f( {\n}\n",
+            "Go near 3:",
+            "a.py",
+        ),
+        (
+            "python",
+            "py",
+            "# c\n",
+            "x = 1\n",
+            "def f(:\n    pass\n",
+            "Python near 1:",
+            "a.go",
+        ),
+    ] {
+        let mut rule = comment_rule(json!({ "language": language, "node": "comment" }));
+        rule["fixtures"] = json!([{
+            "path": format!("src/a.{extension}"), "content": fixture,
+            "expect": { "line": 1, "column": 1 }
+        }]);
+        let rule = policy(&[rule]);
+        let repo = tempfile::tempdir().unwrap();
+        let root = repo.path();
+        git(root, &["init", "-q"]);
+
+        write(root, &format!("src/bad.{extension}"), bad);
+        git(root, &["add", "-A"]);
+        let error = run(cli(&["check"], &rule, root), 2);
+        assert!(
+            error.contains(&format!(
+                "[source/no-comments] src/bad.{extension}: cannot parse as {near}"
+            )),
+            "{error}"
+        );
+        fs::remove_file(root.join(format!("src/bad.{extension}"))).unwrap();
+        write(root, &format!("src/ok.{extension}"), clean);
+        git(root, &["add", "-A"]);
+        assert_eq!(run(cli(&["check"], &rule, root), 0), "");
+
+        write(root, &format!("src/{other}"), "x\n");
+        git(root, &["add", "-A"]);
+        let error = run(cli(&["check"], &rule, root), 2);
+        let extensions = if language == "go" {
+            ".go"
+        } else {
+            ".py and .pyi"
+        };
+        assert!(
+            error.contains(&format!(
+                "src/{other}: syntax rules for {language} apply to {extensions} files; narrow the path scope"
+            )),
+            "{error}"
+        );
+    }
+}
+
+/// A file in scope is at most 1 MiB, and matching walks the tree once, so a
+/// deeply nested file with a comment at every level is judged quickly. Before
+/// the single pass, each comment walked all its ancestors.
+#[test]
+fn deeply_nested_files_are_judged_in_bounded_time() {
+    let depth = 40_000;
+    let go = format!(
+        "package p\n\nvar x = {}1{}\n",
+        "(/*c*/".repeat(depth),
+        ")".repeat(depth)
+    );
+    let python = format!("x = {}1{}\n", "(  # c\n".repeat(depth), ")".repeat(depth));
+    let typescript = format!(
+        "const x = {}1{};\n",
+        "(/*c*/".repeat(depth),
+        ")".repeat(depth)
+    );
+    let unclosed = format!("package p\n\nvar x = {}\n", "(".repeat(depth * 4));
+    let repo = tempfile::tempdir().unwrap();
+    let root = repo.path();
+    git(root, &["init", "-q"]);
+    write(root, "src/deep.go", &go);
+    write(root, "src/deep.py", &python);
+    write(root, "src/deep.ts", &typescript);
+    git(root, &["add", "-A"]);
+    let rules: Vec<Value> = [
+        ("go", "src/deep.go", "function_declaration", "package p\n"),
+        ("python", "src/deep.py", "function_definition", "x = 1\n"),
+        (
+            "typescript",
+            "src/deep.ts",
+            "function_declaration",
+            "const x = 1;\n",
+        ),
+    ]
+    .into_iter()
+    .map(|(language, path, kind, fixture)| {
+        let mut rule = comment_rule(json!({
+            "language": language, "node": "comment",
+            "inside": { "kinds": [kind], "field": "body" }
+        }));
+        rule["id"] = json!(format!("source/{language}"));
+        rule["paths"] = json!([path]);
+        rule["fixtures"] = json!([{ "path": path, "content": fixture, "expect": null }]);
+        rule
+    })
+    .collect();
+    let started = std::time::Instant::now();
+    assert_eq!(run(cli(&["check"], &policy(&rules), root), 0), "");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(30),
+        "{:?}",
+        started.elapsed()
+    );
+
+    // An unclosed nesting this deep still reports a parse position, not a crash.
+    write(root, "src/deep.go", &unclosed);
+    git(root, &["add", "-A"]);
+    let error = run(cli(&["check"], &policy(&rules), root), 2);
+    assert!(
+        error.contains("src/deep.go: cannot parse as Go near"),
+        "{error}"
+    );
+
+    // A file over the 1 MiB read limit cannot be judged.
+    write(
+        root,
+        "src/deep.go",
+        &format!("package p\n{}", " ".repeat(1024 * 1024)),
+    );
+    git(root, &["add", "-A"]);
+    let error = run(cli(&["check"], &policy(&rules), root), 2);
+    assert!(
+        error.contains("src/deep.go") && error.contains("exceeds 1048576 bytes"),
         "{error}"
     );
 }

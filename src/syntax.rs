@@ -2,10 +2,12 @@
 //! tree-sitter grammar. The selector names a node kind, an optional enclosing
 //! node and field, and optional text filters that drop a node, so new rules need
 //! no Rust changes. Node and field names are the grammar's own and are checked
-//! against it when the policy loads.
+//! against it when the policy loads. Matching is one pass over the tree, so
+//! its cost grows with file size, not nesting depth.
 use crate::policy::{Result, Span};
 use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
+use std::collections::HashSet;
 use tree_sitter::{Language, Node, Parser};
 
 const MAX_NAMES: usize = 16;
@@ -26,6 +28,8 @@ pub struct Selector {
 enum LanguageName {
     Typescript,
     Rust,
+    Go,
+    Python,
 }
 
 #[derive(Deserialize)]
@@ -73,6 +77,12 @@ fn dialects(language: LanguageName) -> Vec<Dialect> {
             ),
         ],
         LanguageName::Rust => vec![("Rust", tree_sitter_rust::LANGUAGE.into(), &[".rs"])],
+        LanguageName::Go => vec![("Go", tree_sitter_go::LANGUAGE.into(), &[".go"])],
+        LanguageName::Python => vec![(
+            "Python",
+            tree_sitter_python::LANGUAGE.into(),
+            &[".py", ".pyi"],
+        )],
     }
 }
 
@@ -82,6 +92,8 @@ impl LanguageName {
         match self {
             Self::Typescript => ("typescript", "TypeScript", ".ts, .mts, .cts and .tsx"),
             Self::Rust => ("rust", "Rust", ".rs"),
+            Self::Go => ("go", "Go", ".go"),
+            Self::Python => ("python", "Python", ".py and .pyi"),
         }
     }
 }
@@ -209,62 +221,109 @@ impl SyntaxMatcher {
             ));
         }
 
+        // One pass in document order. Each frame on `path` records whether
+        // its node lies inside a selected ancestor field, so a node's
+        // ancestors are never walked again and deep trees stay linear.
         let mut cursor = root.walk();
+        let mut path = vec![self.frame(root, self.inside.is_none())];
         loop {
             let node = cursor.node();
-            if node.is_named() && node.kind() == self.node && self.selects(node, content) {
+            let frame = path.last().expect("the path holds the current node");
+            if frame.enclosed
+                && node.is_named()
+                && node.kind() == self.node
+                && self.kept(node, content)
+            {
                 return Ok(Some(Span {
                     start: node.start_byte(),
                     end: node.end_byte(),
                 }));
             }
-            if cursor.goto_first_child() || cursor.goto_next_sibling() {
+            if cursor.goto_first_child() {
+                let child = self.child_frame(&path, cursor.node());
+                path.push(child);
                 continue;
             }
             loop {
+                if cursor.goto_next_sibling() {
+                    path.pop();
+                    let sibling = self.child_frame(&path, cursor.node());
+                    path.push(sibling);
+                    break;
+                }
                 if !cursor.goto_parent() {
                     return Ok(None);
                 }
-                if cursor.goto_next_sibling() {
-                    break;
-                }
+                path.pop();
             }
         }
     }
 
-    fn selects(&self, node: Node, content: &str) -> bool {
-        if let Some((kinds, field)) = &self.inside {
-            let mut child = node;
-            let enclosed = loop {
-                let Some(parent) = child.parent() else {
-                    break false;
-                };
-                if kinds.iter().any(|kind| kind == parent.kind())
-                    && field.as_deref().is_none_or(|field| {
-                        parent
-                            .children_by_field_name(field, &mut parent.walk())
-                            .any(|body| body.id() == child.id())
-                    })
-                {
-                    break true;
+    /// The frame of a node whose own enclosure is already known. A node of an
+    /// `inside` kind encloses all its children, or with a field only the
+    /// children in that field.
+    fn frame(&self, node: Node, enclosed: bool) -> Frame {
+        let children = match &self.inside {
+            Some((kinds, field)) if !enclosed && kinds.iter().any(|kind| kind == node.kind()) => {
+                match field {
+                    None => Children::All,
+                    Some(field) => Children::Field(
+                        node.children_by_field_name(field, &mut node.walk())
+                            .map(|child| child.id())
+                            .collect(),
+                    ),
                 }
-                child = parent;
-            };
-            if !enclosed {
-                return false;
             }
-        }
+            _ => Children::None,
+        };
+        Frame { enclosed, children }
+    }
+
+    fn child_frame(&self, path: &[Frame], child: Node) -> Frame {
+        let parent = path.last().expect("a child has a parent frame");
+        let enclosed = parent.enclosed
+            || match &parent.children {
+                Children::None => false,
+                Children::All => true,
+                Children::Field(ids) => ids.contains(&child.id()),
+            };
+        self.frame(child, enclosed)
+    }
+
+    fn kept(&self, node: Node, content: &str) -> bool {
         let text = &content[node.byte_range()];
         !self.ignore.iter().any(|filter| filter.matches(text))
     }
 }
 
-fn first_error(node: Node) -> Option<Node> {
-    if node.is_error() || node.is_missing() {
-        return Some(node);
+struct Frame {
+    /// The node lies within an `inside` ancestor (always, without `inside`).
+    enclosed: bool,
+    /// Which of the node's children an `inside` match encloses.
+    children: Children,
+}
+
+enum Children {
+    None,
+    All,
+    Field(HashSet<usize>),
+}
+
+/// The first error or missing node in document order, found without
+/// recursion so a deeply nested file cannot exhaust the stack.
+fn first_error(root: Node) -> Option<Node> {
+    let mut node = root;
+    'descend: loop {
+        if node.is_error() || node.is_missing() {
+            return Some(node);
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.has_error() {
+                node = child;
+                continue 'descend;
+            }
+        }
+        return None;
     }
-    let mut cursor = node.walk();
-    node.children(&mut cursor)
-        .filter(|child| child.has_error())
-        .find_map(first_error)
 }
