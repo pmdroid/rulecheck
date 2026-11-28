@@ -1,6 +1,7 @@
+use crate::dialect;
 use crate::syntax::{Selector, SyntaxMatcher};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
-use regex::{Regex, RegexBuilder};
+use regex::Regex;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -174,6 +175,9 @@ pub struct CompiledRule {
     /// A baseline entry recorded under another digest is incompatible.
     pub matcher_digest: String,
     pub fixtures: Vec<Fixture>,
+    /// How JavaScript would read this rule's regex differently, shown when a
+    /// fixture fails. Matching never uses it.
+    pub dialect_note: Option<String>,
 }
 
 /// A compiled `skipIfContent`: a byte regex run on a bounded file prefix.
@@ -413,19 +417,27 @@ impl Rule {
                     .into(),
             );
         }
-        let matcher = match (self.kind, self.pattern, self.selector) {
+        let (matcher, dialect_note) = match (self.kind, self.pattern, self.selector) {
             (Kind::Text, Some(pattern), None) => {
-                let trigger = Matcher::compile(pattern)?;
+                let (trigger, note) = Matcher::compile(pattern)?;
                 match self.requires {
-                    None => trigger,
-                    Some(requires) => Matcher::Requires {
-                        trigger: Box::new(trigger),
-                        requirement: Box::new(Matcher::requirement(requires)?),
-                    },
+                    None => (trigger, note),
+                    Some(requires) => {
+                        let (requirement, required_note) = Matcher::requirement(requires)?;
+                        let matcher = Matcher::Requires {
+                            trigger: Box::new(trigger),
+                            requirement: Box::new(requirement),
+                        };
+                        (matcher, note.or(required_note))
+                    }
                 }
             }
-            (Kind::ForbiddenPath, None, None) => Matcher::ForbiddenPath,
-            (Kind::Syntax, None, Some(selector)) => Matcher::Syntax(selector.compile()?),
+            (Kind::ForbiddenPath, None, None) => (Matcher::ForbiddenPath, None),
+            (Kind::Syntax, None, Some(selector)) => {
+                let selector = selector.compile()?;
+                let note = selector.dialect_note().map(str::to_owned);
+                (Matcher::Syntax(selector), note)
+            }
             _ => {
                 return Err(
                     "text rules require a pattern, syntax rules require a selector, \
@@ -513,6 +525,7 @@ impl Rule {
             anchors,
             skip,
             fixtures,
+            dialect_note,
         })
     }
 }
@@ -682,7 +695,12 @@ impl ContentSkip {
             .size_limit(256 * 1024)
             .dfa_size_limit(128 * 1024)
             .build()
-            .map_err(|err| format!("invalid skipIfContent regex: {err}"))?;
+            .map_err(|err| {
+                format!(
+                    "invalid skipIfContent regex: {}",
+                    dialect::explain(&pattern, err)
+                )
+            })?;
         Ok(Self {
             regex,
             first_bytes: skip.first_bytes,
@@ -719,7 +737,7 @@ fn globs(field: &str, patterns: &[impl AsRef<str>]) -> Result<GlobSet> {
 }
 
 impl Matcher {
-    fn compile(pattern: Pattern) -> Result<Self> {
+    fn compile(pattern: Pattern) -> Result<(Self, Option<String>)> {
         let value = match &pattern {
             Pattern::Literal { value } | Pattern::Regex { value } => value,
         };
@@ -727,21 +745,17 @@ impl Matcher {
             return Err("use a pattern of 1 to 4096 bytes".into());
         }
         match pattern {
-            Pattern::Literal { value } => Ok(Self::Literal(value)),
-            Pattern::Regex { value } => RegexBuilder::new(&value)
-                .nest_limit(64)
-                .size_limit(256 * 1024)
-                .dfa_size_limit(128 * 1024)
-                .build()
-                .map(Self::Regex)
+            Pattern::Literal { value } => Ok((Self::Literal(value), None)),
+            Pattern::Regex { value } => dialect::compile(&value)
+                .map(|compiled| (Self::Regex(compiled.regex), compiled.note))
                 .map_err(|err| format!("invalid regex: {err}")),
         }
     }
 
     /// A `requires` pattern. One that can match empty text would be met by
     /// every file, so the rule could never report and is refused.
-    fn requirement(pattern: Pattern) -> Result<Self> {
-        let matcher = Self::compile(pattern).map_err(|err| format!("requires: {err}"))?;
+    fn requirement(pattern: Pattern) -> Result<(Self, Option<String>)> {
+        let (matcher, note) = Self::compile(pattern).map_err(|err| format!("requires: {err}"))?;
         if let Self::Regex(regex) = &matcher
             && regex.is_match("")
         {
@@ -751,7 +765,7 @@ impl Matcher {
                     .into(),
             );
         }
-        Ok(matcher)
+        Ok((matcher, note))
     }
 
     /// Whether the text contains any match. Only text matchers are used as

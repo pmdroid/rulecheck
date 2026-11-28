@@ -32,7 +32,7 @@ rulecheck build: .rulecheck/rules/demo.rule.ts:16:26: Unknown property col in fi
 rulecheck: could not build policy from /path/to/checkout/.rulecheck/rules
 ```
 
-The evaluator still checks limits, rule IDs, globs, regex syntax, and syntax selector node kinds and fields. Those messages name the rule ID, such as `[config/no-legacy-mode] invalid regex: …`.
+The evaluator still checks limits, rule IDs, globs, regex syntax, and syntax selector node kinds and fields. Those messages name the rule ID, such as `[config/no-legacy-mode] invalid regex: …`. Regexes use the Rust dialect. When a JavaScript-only construct such as look-around stops one compiling, the message ends with a `hint:` line ([porting reference](../authoring/#port-a-javascript-regex)).
 
 `--commit` takes a full 40- or 64-character SHA. A short SHA or `HEAD` is an argument error: it exits 2 with one usage line and, with `--format json`, no result document. Resolve it first:
 

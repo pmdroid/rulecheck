@@ -23,6 +23,9 @@ import syntaxGo from '../../../examples/rules/syntax-go.rule.ts?raw';
 import syntaxPython from '../../../examples/rules/syntax-python.rule.ts?raw';
 import allMatches from '../../../examples/rules/all-matches.rule.ts?raw';
 import requires from '../../../examples/rules/requires.rule.ts?raw';
+import regexBackreference from '../../../examples/rules/regex-backreference.rule.ts?raw';
+import regexLookahead from '../../../examples/rules/regex-lookahead.rule.ts?raw';
+import regexLookbehind from '../../../examples/rules/regex-lookbehind.rule.ts?raw';
 
 Rulecheck supports four matcher forms: **literal text**, **regex text**, **forbidden path**, and **syntax**. The first three recipes show the text and path forms, the middle recipes show how to control where a rule applies, and the [syntax recipes](#comments-in-function-bodies) select TypeScript, TSX, Rust, Go and Python syntax nodes. The code below comes from the same TypeScript files that CI runs. Copy a recipe into `.rulecheck/rules/` and adapt its ID, paths, and fixtures.
 
@@ -46,6 +49,24 @@ Ban an exact spelling. This is a case-sensitive substring check, not a parser: `
 Match a line even when spacing varies. This example accepts optional whitespace and trailing comments when looking for `debug=true`. Rust regex syntax applies; use inline flags such as `(?m)` instead of JavaScript regex literals.
 
 <Code code={regex} lang="ts" title="regex.rule.ts" />
+
+## Port a JavaScript regex
+
+Rust regex has no look-around and no backreferences, so a JavaScript pattern that uses them doesn't compile and exits 2 with a hint. Each recipe below starts from a JavaScript pattern in its comment and keeps its findings, apart from the limits it names. Its fixtures show where the rewrite and the original agree. The [porting reference](../authoring/#port-a-javascript-regex) lists the other differences, including nested classes and set operators.
+
+A backreference that matches the same quote twice becomes one alternative per quote style:
+
+<Code code={regexBackreference} lang="ts" title="regex-backreference.rule.ts" />
+
+A negative look-ahead that allows one method becomes a list of banned methods. The finding starts where it did, but a method the list doesn't name passes:
+
+<Code code={regexLookahead} lang="ts" title="regex-lookahead.rule.ts" />
+
+A negative look-behind becomes a group that consumes the character before the name. That character is part of the match, so the finding starts one column before the name. At the start of a line the group matches nothing, and the finding starts at the name:
+
+<Code code={regexLookbehind} lang="ts" title="regex-lookbehind.rule.ts" />
+
+When the condition is about where the text sits, such as in a comment, a string or a function body, use a [syntax rule](#comments-in-function-bodies).
 
 ## Forbidden path
 
