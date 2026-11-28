@@ -9,9 +9,9 @@ The installed `rulecheck` command builds policy from `.rulecheck/rules/**/*.rule
 | --- | --- |
 | `rulecheck check [--root DIR] [--commit SHA \| --untracked] [--all-matches] [--text-budget MIB] [--baseline FILE [--strict-baseline]] [--format human\|json]` | Scan working-tree files tracked by Git (plus non-ignored untracked files with `--untracked`), or inspect exact committed blobs. With `--baseline`, report only counts above the [baseline](../baselines/). |
 | `rulecheck baseline [--root DIR] [--commit SHA \| --untracked] [--text-budget MIB] [--baseline FILE [--write]]` | Record the all-match counts of a complete scan as a [baseline](../baselines/), to stdout or with `--write` to `FILE`. |
-| `rulecheck test [--root DIR] [--commit SHA]` | Run rule fixtures. |
+| `rulecheck test [--root DIR] [--commit SHA] [--strict-fixtures]` | Run rule fixtures. `--strict-fixtures` also fails rules with no [positive fixture](../authoring/#strict-fixture-coverage). |
 | `rulecheck list [--root DIR] [--commit SHA]` | List rule IDs in sorted order. |
-| `rulecheck validate [--root DIR] [--commit SHA]` | Check policy syntax, rule IDs, globs, and patterns. |
+| `rulecheck validate [--root DIR] [--commit SHA] [--strict-fixtures]` | Check policy syntax, rule IDs, globs, and patterns. `--strict-fixtures` also fails rules with no positive fixture. |
 | `rulecheck schema` | Print the v1 schema. |
 | `rulecheck help` | Print usage to stdout and exit 0. `-h` and `--help` do the same. |
 
@@ -20,7 +20,7 @@ The installed `rulecheck` command builds policy from `.rulecheck/rules/**/*.rule
 | Exit | Meaning |
 | --- | --- |
 | 0 | Successful command; no violations or fixture mismatches. |
-| 1 | One or more findings or fixture mismatches. With `--baseline`, a rule and path above its allowance, or with `--strict-baseline` one below it or a stale rule entry. |
+| 1 | One or more findings or fixture mismatches, or with `--strict-fixtures` a rule with no positive fixture. With `--baseline`, a rule and path above its allowance, or with `--strict-baseline` one below it or a stale rule entry. |
 | 2 | Could not judge, such as an invalid rule file, a builder failure, unreadable text, a file in a syntax rule's scope that doesn't parse, a text or syntax rule matching no files, a syntax rule selected with `--all-matches`, a scan that stopped at its [text budget](#scan-budget) with partial findings, or a baseline that is missing, invalid, not canonical, or recorded for other match semantics. `baseline` also exits 2 instead of recording an incomplete scan. |
 
 Findings and fixture mismatches go to stdout, one per line. Exit 2 diagnostics go to stderr. `validate` prints nothing on success, and `test` prints a count such as `4 fixtures passed`. Running `rulecheck` with no command prints the usage to stderr and exits 2, so a script that drops its command never reads as clean.

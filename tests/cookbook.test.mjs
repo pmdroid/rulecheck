@@ -141,7 +141,7 @@ for (const [name, { clean, bad, finding, args: flags }] of Object.entries(recipe
     }
     const input = run(process.execPath, [join(root, "tools/build.mjs"), "--root", cwd], { cwd }).stdout;
     run(evaluator, ["validate"], { input, cwd });
-    run(evaluator, ["test"], { input, cwd });
+    run(evaluator, ["test", "--strict-fixtures"], { input, cwd });
     const scan = ({ policy = input, sha, expected = "" } = {}) => {
       const args = ["check", "--root", cwd, ...flags, ...(sha ? ["--commit", sha] : [])];
       const actual = run(evaluator, args, { input: policy, cwd, status: expected ? 1 : 0 });
