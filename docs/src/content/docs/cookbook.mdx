@@ -18,6 +18,7 @@ import syntaxRust from '../../../examples/rules/syntax-rust.rule.ts?raw';
 import syntaxGo from '../../../examples/rules/syntax-go.rule.ts?raw';
 import syntaxPython from '../../../examples/rules/syntax-python.rule.ts?raw';
 import allMatches from '../../../examples/rules/all-matches.rule.ts?raw';
+import requires from '../../../examples/rules/requires.rule.ts?raw';
 
 Rulecheck supports four matcher forms: **literal text**, **regex text**, **forbidden path**, and **syntax**. The first three recipes show the text and path forms, the middle recipes show how to control where a rule applies, and the [syntax recipes](#comments-in-function-bodies) select TypeScript, TSX, Rust, Go and Python syntax nodes. The code below comes from the same TypeScript files that CI runs. Copy a recipe into `.rulecheck/rules/` and adapt its ID, paths, and fixtures.
 
@@ -117,6 +118,20 @@ src/app.ts:2:11: [source/no-todo-markers] fixture 3 expected 2 violations at 1:4
 ```
 
 `expectAll` is for text rules. A forbidden-path rule reports at most one finding per path, and syntax rules aren't counted yet, so the builder and the evaluator reject `expectAll` there. The [CLI reference](../cli/#every-match) defines the match semantics for literal, regex and zero-width patterns.
+
+## Require text in the same file
+
+A text rule can be conditional: when its `pattern` matches a file, the file must also match `requires` somewhere. Here every file under `src/` that starts an interval must also clear one. The requirement can come before or after the trigger and on any line. Text in another file doesn't count.
+
+<Code code={requires} lang="ts" title="requires.rule.ts" />
+
+Findings point at the trigger, the `pattern` match, and never at the requirement. A file without a trigger is clean, and so is a file with both. A file with triggers and no requirement reports its first trigger by default, or every trigger with `--all-matches` and in a [baseline](../baselines/). The runner checks a clean checkout, then drops `clearInterval` from `src/poll.ts`. The working tree and the exact commit then both report:
+
+```text
+src/poll.ts:1:12: [source/interval-needs-clear] Keep the interval handle and call clearInterval when the work stops.
+```
+
+`requires` takes the same `{ kind, value }` as `pattern`, and only text rules have it. A regex requirement that can match empty text, such as `x*` or `(clearInterval\()?`, is refused when the policy loads, because every file would meet it and the rule could never report. The requirement is file-wide presence only. It doesn't tie a trigger to a nearby match or to the same function. A file whose text can't be read as UTF-8, or a scoped path that can't be read without following a symlink, exits 2 and doesn't count as meeting the requirement.
 
 ## Comments in function bodies
 

@@ -69,6 +69,11 @@ const recipes = {
     "src/app/total.py": '# Totals for the report.\ndef total(xs):\n    """Sum the values. # is not a comment here."""\n    sep = "# none"\n    # TODO: overflow check\n    return sum(xs)  # type: ignore[arg-type]\n',
   }, { "src/app/total.py": "def total(xs):\n    # add them up\n    return sum(xs)\n" },
   "src/app/total.py:2:5: [source/no-python-function-comments] Move the explanation into a docstring or a name."),
+  requires: recipe({
+    "src/clock.ts": "export const now = () => Date.now();\n",
+    "src/poll.ts": "const id = setInterval(poll, 1000);\nexport const stop = () => clearInterval(id);\n",
+  }, { "src/poll.ts": "const id = setInterval(poll, 1000);\nexport const stop = () => id;\n" },
+  "src/poll.ts:1:12: [source/interval-needs-clear] Keep the interval handle and call clearInterval when the work stops."),
 };
 
 function run(bin, args, { cwd, input, status = 0 } = {}) {
@@ -129,6 +134,15 @@ for (const [name, { clean, bad, finding, args: flags }] of Object.entries(recipe
       git("-c", "user.name=Rulecheck", "-c", "user.email=rulecheck@example.invalid",
         "-c", "commit.gpgsign=false", "commit", "-qm", "Add markers");
       scan({ expected: finding, sha: git("rev-parse", "HEAD") });
+    }
+    if (name === "requires") {
+      // The exact commit judges the same bytes the same way, and restoring the
+      // requirement clears the finding.
+      git("-c", "user.name=Rulecheck", "-c", "user.email=rulecheck@example.invalid",
+        "-c", "commit.gpgsign=false", "commit", "-qm", "Drop clearInterval");
+      scan({ expected: finding, sha: git("rev-parse", "HEAD") });
+      write(clean);
+      scan();
     }
     if (name === "scope") {
       write(clean);
