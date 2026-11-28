@@ -35,15 +35,18 @@ export interface SkipIfContent {
 }
 
 /**
- * Skips a text rule's match that lies wholly inside one of `contexts`, as parsed by the pinned
- * TypeScript grammar (.ts, .mts and .cts files, and .tsx with the TSX grammar). "comment" covers
- * line and block comments. "string" covers quoted strings and the literal parts of template
- * strings, not their `${...}` substitutions. Each match is judged on its own, so a skipped one
- * never hides a later match. When the pattern matches in a file the grammar does not cover or
- * cannot parse, the match cannot be classified and the check exits 2.
+ * Skips a text rule's match that lies wholly inside one of `contexts`, as parsed by a pinned
+ * grammar. "typescript" parses .ts, .mts and .cts files, and .tsx with the TSX grammar: "comment"
+ * covers line and block comments, and "string" covers quoted strings and the literal parts of
+ * template strings, not their `${...}` substitutions. "bash" parses .sh and .bash files:
+ * "comment" covers `#` comments, and "string" covers `'...'`, `$'...'` and the literal parts of
+ * `"..."`, not the expansions or `$(...)` inside. Heredoc bodies are never skipped. Each match is
+ * judged on its own, so a skipped one never hides a later match. When the pattern matches in a
+ * file the grammar does not cover or cannot parse, or a Bash file with a construct the grammar
+ * reads differently from bash, the match cannot be classified and the check exits 2.
  */
 export interface IgnoreInside {
-  language: "typescript";
+  language: "typescript" | "bash";
   contexts: readonly ("comment" | "string")[];
 }
 

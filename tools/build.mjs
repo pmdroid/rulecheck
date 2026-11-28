@@ -426,7 +426,7 @@ function checkShape(rule, fail, setNames) {
     if (Object.hasOwn(rule, "ignoreInside")) {
       expect(rule, "ignoreInside", "rule", isObject, "an object { language, contexts }");
       fields(rule.ignoreInside, "the ignoreInside", ["language", "contexts"], ["language", "contexts"]);
-      expect(rule.ignoreInside, "language", "ignoreInside", (value) => value === "typescript", '"typescript"');
+      expect(rule.ignoreInside, "language", "ignoreInside", (value) => ["typescript", "bash"].includes(value), '"typescript" or "bash"');
       expect(rule.ignoreInside, "contexts", "ignoreInside", (value) => Array.isArray(value) && value.length >= 1
         && value.length <= 2 && new Set(value).size === value.length && value.every((context) => ["comment", "string"].includes(context)),
         'a list of distinct contexts: "comment", "string"');

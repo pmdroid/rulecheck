@@ -580,7 +580,7 @@ fn schema_sdk_and_evaluator_accept_the_same_rule_fields() {
         "pattern: { kind: \"literal\" | \"regex\"; value: string };",
         "requires?: { kind: \"literal\" | \"regex\"; value: string };",
         "ignoreInside?: IgnoreInside;",
-        "language: \"typescript\";\n  contexts: readonly (\"comment\" | \"string\")[];",
+        "language: \"typescript\" | \"bash\";\n  contexts: readonly (\"comment\" | \"string\")[];",
         "path: string; content: string; expect: Location | null",
         "path: string; expect: Location | null",
         "{ path: string; content: string } & (",
