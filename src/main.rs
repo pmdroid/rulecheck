@@ -1,13 +1,15 @@
+mod baseline;
 mod policy;
 mod repository;
 mod syntax;
 
+use baseline::Comparison;
 use policy::{CompiledRule, Expect, Location, Result};
-use repository::{DEFAULT_TEXT_BUDGET_MIB, MAX_TEXT_BUDGET_MIB, Matches, Partial, Report};
+use repository::{DEFAULT_TEXT_BUDGET_MIB, Finding, MAX_TEXT_BUDGET_MIB, Matches, Partial, Report};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -24,14 +26,21 @@ rulecheck: deterministic repository checks
   rulecheck list [--id-prefix PREFIX]        List policy rule IDs
   rulecheck test [--id-prefix PREFIX]        Check exact fixture expectations
   rulecheck check [--root DIR] [--commit SHA | --untracked] [--id-prefix PREFIX] [--all-matches]
-                  [--text-budget MIB] [--format human|json]
+                  [--text-budget MIB] [--baseline FILE [--strict-baseline]] [--format human|json]
                                             Scan a checkout or exact Git commit
+  rulecheck baseline [--root DIR] [--commit SHA | --untracked] [--id-prefix PREFIX]
+                  [--text-budget MIB] [--baseline FILE [--write]]
+                                            Record existing finding counts
 
 --untracked adds non-ignored untracked files to a working-tree check.
 --all-matches reports every text match instead of the first per rule and file;
 syntax rules cannot be counted yet, so selecting one exits 2.
 --text-budget sets how much scoped text one check reads, in MiB: 1 to 1024,
 default 64. A check that reaches it reports partial findings and exits 2.
+--baseline FILE counts every match and reports only rule and path counts above
+the baseline; --strict-baseline also fails counts below it. baseline records
+the counts of a complete scan to stdout, or with --write replaces FILE; with
+--id-prefix only those rules' entries change.
 
 Exit codes: 0 clean, 1 violation or fixture mismatch, 2 cannot judge.";
 
@@ -72,12 +81,27 @@ fn main() -> ExitCode {
     }
 }
 
+/// Parsed command-line flags. Each command accepts only its own.
+struct Options {
+    root: PathBuf,
+    commit: Option<String>,
+    untracked: bool,
+    matches: Matches,
+    budget: Option<usize>,
+    prefix: Option<String>,
+    format: Format,
+    baseline: Option<PathBuf>,
+    strict_baseline: bool,
+    write: bool,
+}
+
 fn run(mut args: impl Iterator<Item = OsString>) -> Result<u8> {
     let Some(command) = args.next() else {
         eprintln!("{HELP}");
         return Err("missing command; run rulecheck help".into());
     };
     let command = command.to_str().ok_or("expected a UTF-8 command")?;
+    let scans = matches!(command, "check" | "baseline");
     let mut root = None;
     let mut commit = None;
     let mut prefix = None;
@@ -85,14 +109,17 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<u8> {
     let mut untracked = false;
     let mut matches = Matches::First;
     let mut budget = None;
+    let mut baseline = None;
+    let mut strict_baseline = false;
+    let mut write = false;
     while let Some(flag) = args.next() {
         match flag.to_str() {
-            Some("--root") if command == "check" && root.is_none() => {
+            Some("--root") if scans && root.is_none() => {
                 root = Some(PathBuf::from(
                     args.next().ok_or("--root requires a directory")?,
                 ));
             }
-            Some("--commit") if command == "check" && commit.is_none() => {
+            Some("--commit") if scans && commit.is_none() => {
                 commit = Some(
                     args.next()
                         .and_then(|value| value.into_string().ok())
@@ -103,15 +130,27 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<u8> {
                         .ok_or(COMMIT_HINT)?,
                 );
             }
-            Some("--untracked") if command == "check" && !untracked => untracked = true,
+            Some("--untracked") if scans && !untracked => untracked = true,
             Some("--all-matches") if command == "check" && matches == Matches::First => {
                 matches = Matches::All;
             }
-            Some("--text-budget") if command == "check" && budget.is_none() => {
+            Some("--text-budget") if scans && budget.is_none() => {
                 budget = Some(text_budget(args.next())?);
             }
+            Some("--baseline") if scans && baseline.is_none() => {
+                baseline = Some(PathBuf::from(
+                    args.next()
+                        .filter(|value| !value.is_empty())
+                        .ok_or("--baseline requires a file")?,
+                ));
+            }
+            Some("--strict-baseline") if command == "check" && !strict_baseline => {
+                strict_baseline = true;
+            }
+            Some("--write") if command == "baseline" && !write => write = true,
             Some("--id-prefix")
-                if matches!(command, "list" | "test" | "check") && prefix.is_none() =>
+                if matches!(command, "list" | "test" | "check" | "baseline")
+                    && prefix.is_none() =>
             {
                 let value = args
                     .next()
@@ -136,26 +175,34 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<u8> {
     if untracked && commit.is_some() {
         return Err(UNTRACKED_COMMIT.into());
     }
+    if strict_baseline && baseline.is_none() {
+        return Err("--strict-baseline requires --baseline FILE".into());
+    }
+    if write && baseline.is_none() {
+        return Err("--write requires --baseline FILE, the file to regenerate".into());
+    }
+    let options = Options {
+        root: root.unwrap_or_else(|| PathBuf::from(".")),
+        commit,
+        untracked,
+        matches,
+        budget,
+        prefix,
+        format: format.unwrap_or(Format::Human),
+        baseline,
+        strict_baseline,
+        write,
+    };
 
     match command {
         "help" | "-h" | "--help" => println!("{HELP}"),
         "-V" | "--version" => println!("rulecheck {}", env!("CARGO_PKG_VERSION")),
         "schema" => print!("{}", include_str!("../schema/policy-v1.json")),
-        "check" => {
-            let root = root.as_deref().unwrap_or(Path::new("."));
-            return check(
-                root,
-                commit.as_deref(),
-                untracked,
-                matches,
-                budget,
-                prefix.as_deref(),
-                format.unwrap_or(Format::Human),
-            );
-        }
+        "check" => return check(&options),
+        "baseline" => return regenerate(&options),
         "validate" | "list" | "test" => {
             let rules = policy::load(&policy::read(io::stdin().lock())?)?;
-            let rules = select(&rules, prefix.as_deref())?;
+            let rules = select(&rules, options.prefix.as_deref())?;
             match command {
                 "list" => rules.iter().for_each(|rule| println!("{}", rule.id)),
                 "test" => return Ok(u8::from(!test(&rules))),
@@ -203,49 +250,126 @@ fn budget_message(partial: &Partial) -> String {
     )
 }
 
+fn scan<'a>(options: &Options, rules: &[&'a CompiledRule], matches: Matches) -> Result<Report<'a>> {
+    let budget = options
+        .budget
+        .unwrap_or(DEFAULT_TEXT_BUDGET_MIB * 1024 * 1024);
+    match &options.commit {
+        Some(sha) => repository::check_commit(&options.root, sha, rules, matches, budget),
+        None => repository::check(&options.root, rules, options.untracked, matches, budget),
+    }
+}
+
+/// The findings to report: with a baseline, only those of a rule and path over
+/// their allowance.
+fn shown<'r, 'a>(report: &'r Report<'a>, comparison: &Option<Comparison>) -> Vec<&'r Finding<'a>> {
+    report
+        .findings
+        .iter()
+        .filter(|finding| comparison.as_ref().is_none_or(|c| c.is_exceeded(finding)))
+        .collect()
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
 /// Reads policy from stdin and scans the checkout or commit. Human output keeps
 /// the line format `path:line:column: [id] remediation`. JSON output always
 /// writes one result document to stdout, including when the scan cannot judge,
 /// and repeats diagnostics on stderr in the human form.
-fn check(
-    root: &Path,
-    commit: Option<&str>,
-    untracked: bool,
-    matches: Matches,
-    budget: Option<usize>,
-    prefix: Option<&str>,
-    format: Format,
-) -> Result<u8> {
-    let budget_bytes = budget.unwrap_or(DEFAULT_TEXT_BUDGET_MIB * 1024 * 1024);
+///
+/// With `--baseline`, every match is counted and only the findings of a rule
+/// and path over their allowance are reported. The baseline is read and
+/// validated before any file is scanned, and a partial scan is never compared.
+fn check(options: &Options) -> Result<u8> {
+    let prefix = options.prefix.as_deref();
+    let commit = options.commit.as_deref();
+    let strict = options.strict_baseline;
     let bytes = policy::read(io::stdin().lock());
-    let digest = bytes
-        .as_ref()
-        .ok()
-        .map(|bytes| format!("sha256:{:x}", Sha256::digest(bytes)));
+    let digest = bytes.as_ref().ok().map(|bytes| sha256(bytes));
     let rules = bytes.and_then(|bytes| policy::load(&bytes));
     let selected = rules
         .as_ref()
         .map_err(Clone::clone)
         .and_then(|rules| select(rules, prefix));
-    let report = selected.as_ref().map_err(Clone::clone).and_then(|rules| {
-        if matches == Matches::All {
-            all_matches_supported(rules)?;
-        }
-        match commit {
-            Some(sha) => repository::check_commit(root, sha, rules, matches, budget_bytes),
-            None => repository::check(root, rules, untracked, matches, budget_bytes),
-        }
+    let baseline_bytes = options.baseline.as_deref().map(|path| {
+        baseline::read(path, false).map(|bytes| bytes.expect("a check requires its baseline"))
     });
+    let baseline_digest = match &baseline_bytes {
+        Some(Ok(bytes)) => Some(sha256(bytes)),
+        _ => None,
+    };
+    let baseline_input =
+        baseline_bytes.map(|bytes| bytes.and_then(|bytes| baseline::parse(&bytes)));
+    let matches = if options.baseline.is_some() {
+        Matches::All
+    } else {
+        options.matches
+    };
+    let judged = selected
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(|selected| {
+            let baseline = baseline_input.transpose()?;
+            if matches == Matches::All && baseline.is_none() {
+                all_matches_supported(selected)?;
+            }
+            let report = scan(options, selected, matches)?;
+            let comparison = match (&baseline, &report.partial) {
+                (Some(baseline), None) => Some(baseline::compare(
+                    baseline,
+                    rules.as_deref().unwrap_or_default(),
+                    selected,
+                    prefix,
+                    &report.findings,
+                )?),
+                _ => None,
+            };
+            Ok((report, comparison))
+        });
+    // Lines about counts that differ from the baseline. Human output prints
+    // violations on stdout with the findings; JSON keeps stdout for the
+    // document, so they all go to stderr. A strict check also fails on a
+    // baseline looser than the scan; otherwise those lines are notes.
+    let tighten = |comparison: &Option<Comparison>, human: bool| {
+        let Some(comparison) = comparison else {
+            return false;
+        };
+        let report = |line: String| match human {
+            true => println!("{line}"),
+            false => eprintln!("{line}"),
+        };
+        comparison
+            .exceeded
+            .iter()
+            .for_each(|group| report(baseline::exceeded_message(group)));
+        let lines = comparison.loose.iter().map(baseline::loose_message).chain(
+            comparison
+                .stale
+                .iter()
+                .map(|id| baseline::stale_message(id)),
+        );
+        for line in lines {
+            match strict {
+                true => report(line),
+                false => eprintln!("rulecheck: note: {line}"),
+            }
+        }
+        strict && comparison.needs_tightening()
+    };
 
-    if format == Format::Human {
-        let report = report?;
-        for finding in &report.findings {
+    if options.format == Format::Human {
+        let (report, comparison) = judged?;
+        let shown = shown(&report, &comparison);
+        for finding in &shown {
             let Location { line, column } = finding.location;
             println!(
                 "{}:{line}:{column}: [{}] {}",
                 finding.path, finding.id, finding.remediation
             );
         }
+        let tightened = tighten(&comparison, true);
         for id in &report.empty_scopes {
             eprintln!("[{id}] {EMPTY_SCOPE}");
         }
@@ -261,28 +385,52 @@ fn check(
         if !report.empty_scopes.is_empty() {
             return Err(EMPTY_SCOPES.into());
         }
-        return Ok(u8::from(!report.findings.is_empty()));
+        return Ok(u8::from(!shown.is_empty() || tightened));
     }
 
     let mut diagnostics = Vec::new();
     let mut findings = Vec::new();
     let mut partial_json = None;
-    match &report {
-        Ok(Report {
-            findings: found,
-            empty_scopes,
-            partial,
-        }) => {
-            findings = found.iter().map(finding_json).collect();
-            for id in empty_scopes {
+    let mut baseline_json = None;
+    let mut tightened = false;
+    match &judged {
+        Ok((report, comparison)) => {
+            findings = shown(report, comparison)
+                .into_iter()
+                .map(finding_json)
+                .collect();
+            tightened = tighten(comparison, false);
+            if let Some(comparison) = comparison {
+                let groups = |groups: &[baseline::Group]| -> Vec<Value> {
+                    groups
+                        .iter()
+                        .map(|group| {
+                            json!({
+                                "ruleId": group.id,
+                                "path": group.path,
+                                "count": group.count,
+                                "allowed": group.allowed,
+                            })
+                        })
+                        .collect()
+                };
+                baseline_json = Some(json!({
+                    "strict": strict,
+                    "allowedFindings": comparison.allowed_findings,
+                    "exceeded": groups(&comparison.exceeded),
+                    "loose": groups(&comparison.loose),
+                    "staleRuleIds": comparison.stale,
+                }));
+            }
+            for id in &report.empty_scopes {
                 eprintln!("[{id}] {EMPTY_SCOPE}");
                 diagnostics.push(json!({ "ruleId": id, "message": EMPTY_SCOPE }));
             }
-            if !empty_scopes.is_empty() {
+            if !report.empty_scopes.is_empty() {
                 eprintln!("rulecheck: {EMPTY_SCOPES}");
                 diagnostics.push(json!({ "ruleId": null, "message": EMPTY_SCOPES }));
             }
-            if let Some(partial) = partial {
+            if let Some(partial) = &report.partial {
                 for id in &partial.unevaluated {
                     eprintln!("[{id}] {UNEVALUATED}");
                     diagnostics.push(json!({ "ruleId": id, "message": UNEVALUATED }));
@@ -307,7 +455,7 @@ fn check(
     let code = if !diagnostics.is_empty() {
         2
     } else {
-        u8::from(!findings.is_empty())
+        u8::from(!findings.is_empty() || tightened)
     };
     let ids: Vec<_> = selected
         .as_deref()
@@ -321,14 +469,20 @@ fn check(
         "commit": commit,
     });
     // Present only when requested, so default results keep their v1 shape.
-    if untracked {
+    if options.untracked {
         source["untracked"] = json!(true);
     }
     if matches == Matches::All {
         source["matches"] = json!("all");
     }
-    if let Some(bytes) = budget {
+    if let Some(bytes) = options.budget {
         source["textBudgetMiB"] = json!(bytes / (1024 * 1024));
+    }
+    if options.baseline.is_some() {
+        source["baselineSha256"] = json!(baseline_digest);
+    }
+    if strict {
+        source["strictBaseline"] = json!(true);
     }
     let mut result = json!({
         "resultVersion": RESULT_VERSION,
@@ -350,11 +504,76 @@ fn check(
     if let Some(partial) = partial_json {
         result["partial"] = partial;
     }
+    // Present only when a complete scan was compared with a baseline.
+    if let Some(baseline) = baseline_json {
+        result["baseline"] = baseline;
+    }
     println!(
         "{}",
         serde_json::to_string_pretty(&result).expect("serialize result")
     );
     Ok(code)
+}
+
+/// `baseline`: records the complete all-match counts of the selected rules and
+/// writes the canonical baseline to stdout, or with `--write` replaces the
+/// `--baseline` file. With `--id-prefix` only those rules' entries change; the
+/// rest are kept from the existing file, which must then be valid. A partial
+/// scan, an empty text scope, a findings cap or a syntax-rule finding records
+/// nothing and exits 2.
+fn regenerate(options: &Options) -> Result<u8> {
+    let prefix = options.prefix.as_deref();
+    let rules = policy::load(&policy::read(io::stdin().lock())?)?;
+    let selected = select(&rules, prefix)?;
+    let existing = match (&options.baseline, prefix) {
+        (Some(path), Some(_)) => baseline::read(path, true)?
+            .map(|bytes| baseline::parse(&bytes))
+            .transpose()
+            .map_err(|err| format!("{err}; scoped regeneration keeps the other rules' entries"))?,
+        _ => None,
+    };
+    let report = scan(options, &selected, Matches::All)?;
+    for id in &report.empty_scopes {
+        eprintln!("[{id}] {EMPTY_SCOPE}");
+    }
+    if let Some(partial) = &report.partial {
+        for id in &partial.unevaluated {
+            eprintln!("[{id}] {UNEVALUATED}");
+        }
+        return Err(format!(
+            "cannot record a baseline from a partial scan, so nothing was written: {}",
+            budget_message(partial)
+        ));
+    }
+    if !report.empty_scopes.is_empty() {
+        return Err(format!(
+            "{EMPTY_SCOPES}; a baseline is recorded only from a complete scan, so nothing was written"
+        ));
+    }
+    let baseline = baseline::generate(existing, &selected, prefix, &report.findings)?;
+    let text = baseline::render(&baseline);
+    match &options.baseline {
+        Some(path) if options.write => write_file(path, &text)?,
+        _ => print!("{text}"),
+    }
+    let (rules, paths, findings) = baseline.totals();
+    eprintln!(
+        "rulecheck: the baseline records {findings} findings in {paths} paths for {rules} rules"
+    );
+    Ok(0)
+}
+
+/// Replaces `path` in one rename, so a failed run leaves the old file.
+fn write_file(path: &Path, text: &str) -> Result<()> {
+    let context = |err: std::io::Error| format!("cannot write baseline {}: {err}", path.display());
+    let parent = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let mut file = tempfile::NamedTempFile::new_in(parent).map_err(context)?;
+    file.write_all(text.as_bytes()).map_err(context)?;
+    file.persist(path).map_err(|err| context(err.error))?;
+    Ok(())
 }
 
 /// All-match counts must be exact, so a selected syntax rule, whose node count
