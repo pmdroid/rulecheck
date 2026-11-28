@@ -442,6 +442,13 @@ fn shipped_rules_and_recipes_match_the_policy_schema() {
         let target = repo.path().join(".rulecheck/rules/example.rule.ts");
         fs::create_dir_all(target.parent().unwrap()).unwrap();
         fs::copy(&source, &target).unwrap();
+        // Recipes that use excludeSets read the example sets from .rulecheck/sets.
+        let sets = repo.path().join(".rulecheck/sets");
+        fs::create_dir_all(&sets).unwrap();
+        for set in fs::read_dir(Path::new(ROOT).join("docs/examples/sets")).unwrap() {
+            let set = set.unwrap().path();
+            fs::copy(&set, sets.join(set.file_name().unwrap())).unwrap();
+        }
         let built = build(repo.path());
         let value: Value = serde_json::from_slice(&built).unwrap();
         let errors = common::violations(&schema, &value);

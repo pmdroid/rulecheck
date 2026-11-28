@@ -6,10 +6,14 @@ import ts from "typescript";
 const maxSource = 128 * 1024;
 const maxPolicy = 1024 * 1024;
 const maxRules = 128;
+const maxSets = 64;
 const maxEntries = 20_000;
 const marker = "@pmdroid/rulecheck";
 const sdkMarkers = new Set([marker, "@rulecheck/sdk"]);
 const rulesDir = ".rulecheck/rules";
+// Named exclusion sets: .rulecheck/sets/<name>.set.ts, read as static data like rules.
+const setsDir = ".rulecheck/sets";
+const SET_NAME = /^[a-z0-9-]+(?:\/[a-z0-9-]+)*$/;
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 const FULL_SHA = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i;
 const COMMIT_HINT = '--commit requires a full 40- or 64-character Git commit SHA; resolve it first, e.g. --commit "$(git rev-parse HEAD)"';
@@ -75,15 +79,22 @@ function discover(root) {
     if (entry.startsWith("160000 ")) gitlinks.add(entry.slice(entry.indexOf("\t") + 1));
   }
 
+  const regularDirectory = (path) => !gitlinks.has(path) && statIfPresent(join(root, path))?.isDirectory()
+    && !statIfPresent(join(root, path, ".git"));
   for (const path of [".rulecheck", rulesDir]) {
-    if (gitlinks.has(path) || !statIfPresent(join(root, path))?.isDirectory()
-        || statIfPresent(join(root, path, ".git"))) {
-      throw new Error(`${path}: use a regular directory inside the checkout`);
-    }
+    if (!regularDirectory(path)) throw new Error(`${path}: use a regular directory inside the checkout`);
+  }
+  // The sets directory is optional, but when present it must be a real directory,
+  // so a symlink or nested repository can't swap in sets from elsewhere.
+  const hasSets = gitlinks.has(setsDir) || statIfPresent(join(root, setsDir)) !== undefined;
+  if (hasSets && !regularDirectory(setsDir)) {
+    throw new Error(`${setsDir}: use a regular directory inside the checkout`);
   }
 
   let entries = 0;
-  const rules = [];
+  let found = [];
+  let suffix = ".rule.ts";
+  let limit = maxRules;
   function walk(directory, depth) {
     if (depth > 32) throw new Error(`${directory}: rules directory is nested too deeply`);
     const handle = opendirSync(join(root, directory));
@@ -100,9 +111,9 @@ function discover(root) {
           throw new Error(`${path}: expected a regular file or directory, not a ${describe(kind)}`);
         }
         if (kind.isDirectory() && !statIfPresent(join(root, path, ".git"))) walk(path, depth + 1);
-        if (kind.isFile() && entry.name.endsWith(".rule.ts")) {
-          if (rules.length >= maxRules) throw new Error(`${rulesDir}: at most ${maxRules} rules are supported`);
-          rules.push(path);
+        if (kind.isFile() && entry.name.endsWith(suffix)) {
+          if (found.length >= limit) throw new Error(`${directory}: at most ${limit} ${suffix} files are supported`);
+          found.push(path);
         }
       }
     } finally {
@@ -110,8 +121,11 @@ function discover(root) {
     }
   }
   walk(rulesDir, 0);
+  const rules = found.sort();
   if (rules.length === 0) throw new Error(`${rulesDir}: add a .rule.ts file`);
-  return rules.sort();
+  [found, suffix, limit] = [[], ".set.ts", maxSets];
+  if (hasSets) walk(setsDir, 0);
+  return { rules, sets: found.sort() };
 }
 
 function committedRules(root, sha) {
@@ -122,11 +136,13 @@ function committedRules(root, sha) {
   }
   const tree = utf8.decode(git(root, ["ls-tree", "--full-tree", "-r", "-t", "-z", sha, "--", ".rulecheck"]));
   const rules = new Map();
+  const sets = new Map();
   const paths = new Set();
   for (const entry of tree.split("\0").slice(0, -1)) {
     const tab = entry.indexOf("\t");
     const path = entry.slice(tab + 1);
-    if (path !== ".rulecheck" && path !== rulesDir && !path.startsWith(`${rulesDir}/`)) continue;
+    const inSets = path === setsDir || path.startsWith(`${setsDir}/`);
+    if (path !== ".rulecheck" && path !== rulesDir && !path.startsWith(`${rulesDir}/`) && !inSets) continue;
     const [mode, type, oid] = entry.slice(0, tab).split(" ");
     const segments = path.split("/");
     if (paths.has(path) || paths.size >= maxEntries || segments.length > 35
@@ -136,20 +152,25 @@ function committedRules(root, sha) {
     }
     paths.add(path);
     const directory = mode === "040000" && type === "tree";
-    if (path === ".rulecheck" || path === rulesDir) {
+    if (path === ".rulecheck" || path === rulesDir || path === setsDir) {
       if (!directory) throw new Error(`${path}: expected a Git tree`);
     } else if (!directory) {
       if (!["100644", "100755"].includes(mode) || type !== "blob") {
         throw new Error(`${path}: expected a regular Git blob`);
       }
-      if (path.endsWith(".rule.ts")) rules.set(path, oid);
+      if (!inSets && path.endsWith(".rule.ts")) rules.set(path, oid);
+      if (inSets && path.endsWith(".set.ts")) sets.set(path, oid);
     }
   }
   if (rules.size === 0 || rules.size > maxRules) {
     throw new Error(`${rulesDir}: expected 1 to ${maxRules} regular .rule.ts files`);
   }
-  return rules;
+  if (sets.size > maxSets) throw new Error(`${setsDir}: at most ${maxSets} .set.ts files are supported`);
+  return new Map([...rules, ...sets]);
 }
+
+// .rulecheck/sets/web/vendor.set.ts names the set "web/vendor".
+const setName = (path) => path.slice(setsDir.length + 1, -".set.ts".length);
 
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const isStrings = (value) => Array.isArray(value) && value.every((item) => typeof item === "string");
@@ -163,7 +184,7 @@ const list = (names) => names.length === 1 ? names[0] : `${names.slice(0, -1).jo
 // reported in the rule file. The evaluator still validates limits, IDs, globs, and
 // regex syntax. fail(container, key, reason, rewrite) throws at the source position of
 // container[key], or of the whole rule when container is undefined.
-function checkShape(rule, fail) {
+function checkShape(rule, fail, setNames) {
   function fields(object, label, known, required) {
     for (const key of Object.keys(object)) {
       if (!known.includes(key)) fail(object, key, `Unknown property ${key} in ${label}`, `Use ${list(known)}.`);
@@ -179,8 +200,8 @@ function checkShape(rule, fail) {
   }
 
   if (!isObject(rule)) fail(undefined, undefined, "The rule must be an object", "Pass an object literal to defineRule.");
-  fields(rule, "the rule", ["id", "kind", "paths", "exclude", "anchors", "remediation", "pattern", "requires", "selector", "provenance", "fixtures"],
-    ["id", "kind", "paths", "remediation", "fixtures"]);
+  fields(rule, "the rule", ["id", "kind", "paths", "exclude", "excludeSets", "skipIfContent", "anchors", "remediation", "pattern",
+    "requires", "selector", "provenance", "fixtures"], ["id", "kind", "paths", "remediation", "fixtures"]);
   expect(rule, "id", "rule", (value) => typeof value === "string", "a string");
   expect(rule, "kind", "rule", (value) => ["text", "forbidden-path", "syntax"].includes(value),
     '"text", "forbidden-path" or "syntax"');
@@ -190,6 +211,25 @@ function checkShape(rule, fail) {
   if (rule.kind !== "forbidden-path" && Object.hasOwn(rule, "anchors")) {
     fail(rule, "anchors", "Only forbidden-path rules have anchors",
       'Remove anchors: text and syntax rules already exit 2 when no file is in scope.');
+  }
+  expect(rule, "excludeSets", "rule", isStrings, "an array of set names");
+  for (const [index, name] of (rule.excludeSets ?? []).entries()) {
+    if (!setNames.has(name)) {
+      fail(rule.excludeSets, index, `Unknown set ${JSON.stringify(name)} in excludeSets`,
+        `Add ${setsDir}/${name}.set.ts or use one of: ${[...setNames].join(", ") || "no sets defined"}.`);
+    }
+  }
+  if (Object.hasOwn(rule, "skipIfContent")) {
+    if (rule.kind === "forbidden-path") {
+      fail(rule, "skipIfContent", "Forbidden-path rules have no skipIfContent, because they never read content",
+        "Remove skipIfContent.");
+    }
+    expect(rule, "skipIfContent", "rule", isObject, "an object { kind, value, firstBytes }");
+    fields(rule.skipIfContent, "the skipIfContent", ["kind", "value", "firstBytes"], ["kind", "value", "firstBytes"]);
+    expect(rule.skipIfContent, "kind", "skipIfContent", (value) => ["literal", "regex"].includes(value), '"literal" or "regex"');
+    expect(rule.skipIfContent, "value", "skipIfContent", (value) => typeof value === "string", "a string");
+    expect(rule.skipIfContent, "firstBytes", "skipIfContent",
+      (value) => Number.isInteger(value) && value >= 1 && value <= 65536, "an integer from 1 to 65536");
   }
   expect(rule, "remediation", "rule", (value) => typeof value === "string", "a string");
   expect(rule, "fixtures", "rule", (value) => Array.isArray(value), "an array of fixtures");
@@ -293,7 +333,25 @@ function checkShape(rule, fail) {
   }
 }
 
-function parse(path, source) {
+// Checks a set file's defineGlobSet({...}) argument, as checkShape does for rules.
+function checkSetShape(set, fail) {
+  if (!isObject(set)) fail(undefined, undefined, "The set must be an object", "Pass an object literal to defineGlobSet.");
+  for (const key of Object.keys(set)) {
+    if (!["version", "globs", "include"].includes(key)) {
+      fail(set, key, `Unknown property ${key} in the set`, "Use version, globs and include.");
+    }
+  }
+  for (const key of ["version", "globs"]) {
+    if (!Object.hasOwn(set, key)) fail(set, undefined, `Missing property ${key} in the set`, `Add ${key}.`);
+  }
+  if (set.version !== 1) fail(set, "version", "set version must be 1", "Change version to 1.");
+  if (!isStrings(set.globs)) fail(set, "globs", "set globs must be an array of glob strings", "Change globs to an array of glob strings.");
+  if (Object.hasOwn(set, "include") && !isStrings(set.include)) {
+    fail(set, "include", "set include must be an array of set names", "Change include to an array of set names.");
+  }
+}
+
+function parse(path, source, helper = "defineRule", setNames = new Set()) {
   const file = ts.createSourceFile(path, source, ts.ScriptTarget.ESNext, false, ts.ScriptKind.TS);
   function reject(position, reason, rewrite) {
     const { line, character } = file.getLineAndCharacterOfPosition(position);
@@ -357,10 +415,10 @@ function parse(path, source) {
   const clause = first && ts.isImportDeclaration(first) && first.importClause;
   const named = clause && clause.namedBindings;
   const imported = named && ts.isNamedImports(named) && named.elements;
-  if (!imported || imported.length !== 1 || imported[0].name.text !== "defineRule"
+  if (!imported || imported.length !== 1 || imported[0].name.text !== helper
       || imported[0].propertyName || imported[0].isTypeOnly || clause.isTypeOnly || clause.name
       || first.attributes || !ts.isStringLiteral(first.moduleSpecifier) || !sdkMarkers.has(first.moduleSpecifier.text)) {
-    reject(first?.getStart(file) ?? 0, "Expected the SDK marker import", `Start with import { defineRule } from "${marker}".`);
+    reject(first?.getStart(file) ?? 0, "Expected the SDK marker import", `Start with import { ${helper} } from "${marker}".`);
   }
 
   for (const [index, statement] of statements.entries()) {
@@ -368,7 +426,7 @@ function parse(path, source) {
         && statement.declarationList.flags & ts.NodeFlags.Const) {
       for (const decl of statement.declarationList.declarations) {
         if (!ts.isIdentifier(decl.name) || !decl.initializer || decl.type
-            || decl.name.text === "defineRule" || bindings.has(decl.name.text)) {
+            || decl.name.text === helper || bindings.has(decl.name.text)) {
           reject(decl.getStart(file), "Unsupported const declaration", "Use a unique name and const name = literal.");
         }
         bindings.set(decl.name.text, literal(decl.initializer));
@@ -378,28 +436,42 @@ function parse(path, source) {
 
     if (index === statements.length - 1 && ts.isExportAssignment(statement) && !statement.isExportEquals) {
       const call = statement.expression;
-      if (ts.isCallExpression(call) && ts.isIdentifier(call.expression) && call.expression.text === "defineRule"
+      if (ts.isCallExpression(call) && ts.isIdentifier(call.expression) && call.expression.text === helper
           && call.arguments.length === 1 && !call.typeArguments && !call.questionDotToken) {
-        const rule = literal(call.arguments[0]);
-        checkShape(rule, (container, key, reason, rewrite) => reject(
-          container === undefined ? call.arguments[0].getStart(file) : at(container, key), reason, rewrite));
-        return rule;
+        const value = literal(call.arguments[0]);
+        const fail = (container, key, reason, rewrite) => reject(
+          container === undefined ? call.arguments[0].getStart(file) : at(container, key), reason, rewrite);
+        if (helper === "defineRule") checkShape(value, fail, setNames);
+        else checkSetShape(value, fail);
+        return value;
       }
     }
 
-    reject(statement.getStart(file), "Unsupported statement", "Use literal const declarations followed by one export default defineRule({...}).");
+    reject(statement.getStart(file), "Unsupported statement", `Use literal const declarations followed by one export default ${helper}({...}).`);
   }
 
-  reject(file.end, "Missing rule", "Add export default defineRule({...}) at the end of the file.");
+  reject(file.end, helper === "defineRule" ? "Missing rule" : "Missing set", `Add export default ${helper}({...}) at the end of the file.`);
 }
 
-function encodeRule(path, read) {
+function encodeRule(path, read, setNames) {
+  return encode(path, read, (source) => parse(path, source, "defineRule", setNames), "rule");
+}
+
+function encodeSet(path, read) {
+  const name = setName(path);
+  if (!SET_NAME.test(name) || name.length > 128) {
+    throw new Error(`${path}:1:1: Invalid set name ${JSON.stringify(name)}. Name set files with lowercase letters, digits and hyphens, such as generated.set.ts.`);
+  }
+  return encode(path, read, (source) => ({ name, ...parse(path, source, "defineGlobSet") }), "set");
+}
+
+function encode(path, read, parseFile, noun) {
   let rule;
   try {
-    rule = parse(path, read(path));
+    rule = parseFile(read(path));
   } catch (error) {
     if (error.message.startsWith(`${path}:`)) throw error;
-    throw new Error(`${path}:1:1: ${error.message}. Use a regular UTF-8 file with a small literal rule.`);
+    throw new Error(`${path}:1:1: ${error.message}. Use a regular UTF-8 file with a small literal ${noun}.`);
   }
 
   let budget = maxPolicy;
@@ -410,7 +482,7 @@ function encodeRule(path, read) {
       return value;
     });
   } catch {
-    throw new Error(`${path}:1:1: Expanded rule is too large or too deeply nested. Reduce repeated or nested literals.`);
+    throw new Error(`${path}:1:1: Expanded ${noun} is too large or too deeply nested. Reduce repeated or nested literals.`);
   }
 }
 
@@ -430,8 +502,12 @@ function build(args) {
   }
   const root = resolve(options.get("--root") ?? ".");
   const sha = options.get("--commit");
+  // Rules and sets always come from the same place: one worktree, or one commit's tree.
   const committed = sha && committedRules(root, sha);
-  const paths = committed ? [...committed.keys()].sort() : discover(root);
+  const all = committed ? [...committed.keys()].sort() : null;
+  const { rules: paths, sets: setPaths } = committed
+    ? { rules: all.filter((path) => !path.startsWith(`${setsDir}/`)), sets: all.filter((path) => path.startsWith(`${setsDir}/`)) }
+    : discover(root);
   const read = (path) => {
     if (!committed) return readRule(join(root, path));
     const oid = committed.get(path);
@@ -440,12 +516,16 @@ function build(args) {
     }
     return utf8.decode(git(root, ["cat-file", "blob", oid], maxSource));
   };
-  const header = '{"version":1,"rules":[';
+  // Without set files the policy is byte-for-byte what earlier builders emitted.
+  const sets = setPaths.map((path) => encodeSet(path, read));
+  const setNames = new Set(setPaths.map(setName));
+  const header = `{"version":1,${sets.length ? `"sets":[${sets.join(",")}],` : ""}"rules":[`;
   const footer = "]}\n";
   let size = Buffer.byteLength(header + footer);
+  if (size > maxPolicy) throw new Error(`${setsDir}:1:1: Policy exceeds 1 MiB. Reduce set sizes.`);
   const rules = [];
   for (const path of paths) {
-    const json = encodeRule(path, read);
+    const json = encodeRule(path, read, setNames);
     size += Buffer.byteLength(json) + Number(rules.length > 0);
     if (size > maxPolicy) throw new Error(`${path}:1:1: Policy exceeds 1 MiB. Reduce rule and fixture sizes.`);
     rules.push(json);

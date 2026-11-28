@@ -5,7 +5,7 @@ description: How the exact-commit shadow workflow and evidence work.
 
 The [Rulecheck shadow workflow](https://github.com/pmdroid/rulecheck/blob/main/.github/workflows/rulecheck-shadow.yml) builds the trusted tools from the workflow commit. It checks the exact candidate commit against base policy, then validates and tests proposed policy and checks the same candidate against it. Proposed changes cannot erase a base-policy violation on that pull request.
 
-The `rulecheck-evidence` artifact records the base and candidate SHAs, tool versions, effective policy digests, phase results, and changed rule IDs. A broken rule or evaluator error is different from a finding.
+The `rulecheck-evidence` artifact records the base and candidate SHAs, tool versions, effective policy digests, phase results, and changed rule IDs. The policy digest covers [exclusion sets](../authoring/#named-exclusion-sets) as well as rules. A rule that uses `excludeSets` appears in the diff with a `resolvedExclude` list of the exclusion globs its sets resolve to, so a commit that edits only a set lists every rule whose scope changes. Set files sit under `.rulecheck/`, so editing one needs the policy owner's review, like a rule edit. A broken rule or evaluator error is different from a finding.
 
 When the base commit has a `.rulecheck/baseline.json`, `base-check` uses that baseline and `proposed-check` uses the candidate's baseline with `--strict-baseline`. A pull request can't raise its own allowance, and a clean-up must ship a tightened baseline. Raising an allowance takes a pull request that changes only the baseline and has exact-head owner approval. See [Baselines in exact-commit CI](../baselines/#in-exact-commit-ci).
 

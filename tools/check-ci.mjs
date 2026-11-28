@@ -61,15 +61,44 @@ function canonical(value) {
   return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]));
 }
 
+// Runs after the evaluator validated the policy, so every set exists and includes
+// have no cycles. A set reached twice is expanded once, as in src/policy.rs.
+function resolveExclude(rule, sets) {
+  const globs = [...(rule.exclude ?? [])];
+  const visited = new Set();
+  const visit = (name) => {
+    if (visited.has(name)) return;
+    visited.add(name);
+    const set = sets.get(name);
+    globs.push(...set.globs);
+    for (const include of set.include ?? []) visit(include);
+  };
+  for (const name of rule.excludeSets ?? []) visit(name);
+  return [...new Set(globs)].sort();
+}
+
 function effectivePolicy(raw) {
   const policy = JSON.parse(raw);
+  const sets = new Map((policy.sets ?? []).map((set) => [set.name, canonical(set)]));
   const rules = new Map(policy.rules.map((rule) => [
     rule.id,
     canonical({ ...rule, paths: [...new Set(rule.paths)].sort() }),
   ]));
-  const input = JSON.stringify({ version: policy.version, rules: [...rules.keys()].sort().map((id) => rules.get(id)) });
+  const ids = [...rules.keys()].sort();
+  const names = [...sets.keys()].sort();
+  const input = JSON.stringify({
+    version: policy.version,
+    ...(names.length ? { sets: names.map((name) => sets.get(name)) } : {}),
+    rules: ids.map((id) => rules.get(id)),
+  });
   const digest = `sha256:${createHash("sha256").update(input).digest("hex")}`;
-  return { rules, input, digest };
+  // The diff shows each rule with the exclusion globs its sets resolve to, so a
+  // set edit lists every rule whose scope it changes.
+  const effective = new Map(ids.map((id) => {
+    const rule = rules.get(id);
+    return [id, rule.excludeSets ? canonical({ ...rule, resolvedExclude: resolveExclude(rule, sets) }) : rule];
+  }));
+  return { rules: effective, input, digest };
 }
 
 function evaluate(phase, policySha, testFixtures, baseline) {

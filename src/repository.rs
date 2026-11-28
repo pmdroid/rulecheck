@@ -245,6 +245,12 @@ fn scan<'a, 'p>(
         };
 
         for (index, rule) in &mut applicable {
+            // A content skip runs after the path checks, on the text read for
+            // every rule. A skipped file counts as out of scope, like an
+            // excluded one, so a rule that skips every file cannot be judged.
+            if rule.skips(content.as_deref()) {
+                continue;
+            }
             hits[index] += 1;
             let found = match matches {
                 Matches::First => rule
