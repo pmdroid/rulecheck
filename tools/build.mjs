@@ -4,8 +4,10 @@ import { join, resolve } from "node:path";
 import ts from "typescript";
 
 const maxSource = 128 * 1024;
-const maxPolicy = 1024 * 1024;
-const maxRules = 128;
+// Kept equal to MAX_POLICY and MAX_RULES in src/policy.rs, maxPolicy in bin/rulecheck.mjs
+// and maxItems in schema/policy-v1.json.
+const maxPolicy = 4 * 1024 * 1024;
+const maxRules = 1024;
 const maxEntries = 20_000;
 const marker = "@pmdroid/rulecheck";
 const sdkMarkers = new Set([marker, "@rulecheck/sdk"]);
@@ -14,6 +16,7 @@ const utf8 = new TextDecoder("utf-8", { fatal: true });
 const FULL_SHA = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i;
 const COMMIT_HINT = '--commit requires a full 40- or 64-character Git commit SHA; resolve it first, e.g. --commit "$(git rev-parse HEAD)"';
 const ROOT_HINT = "run from the checkout root or pass --root";
+const TOO_MANY_RULES = `${rulesDir}: more than ${maxRules} .rule.ts files; a policy holds at most ${maxRules} rules`;
 
 function readRule(path) {
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -101,7 +104,7 @@ function discover(root) {
         }
         if (kind.isDirectory() && !statIfPresent(join(root, path, ".git"))) walk(path, depth + 1);
         if (kind.isFile() && entry.name.endsWith(".rule.ts")) {
-          if (rules.length >= maxRules) throw new Error(`${rulesDir}: at most ${maxRules} rules are supported`);
+          if (rules.length >= maxRules) throw new Error(TOO_MANY_RULES);
           rules.push(path);
         }
       }
@@ -145,9 +148,8 @@ function committedRules(root, sha) {
       if (path.endsWith(".rule.ts")) rules.set(path, oid);
     }
   }
-  if (rules.size === 0 || rules.size > maxRules) {
-    throw new Error(`${rulesDir}: expected 1 to ${maxRules} regular .rule.ts files`);
-  }
+  if (rules.size === 0) throw new Error(`${rulesDir}: add a .rule.ts file at commit ${sha}`);
+  if (rules.size > maxRules) throw new Error(TOO_MANY_RULES);
   return rules;
 }
 
@@ -432,7 +434,7 @@ function build(args) {
   for (const path of paths) {
     const json = encodeRule(path, read);
     size += Buffer.byteLength(json) + Number(rules.length > 0);
-    if (size > maxPolicy) throw new Error(`${path}:1:1: Policy exceeds 1 MiB. Reduce rule and fixture sizes.`);
+    if (size > maxPolicy) throw new Error(`${path}:1:1: Policy exceeds 4 MiB. Reduce rule and fixture sizes.`);
     rules.push(json);
   }
   process.stdout.write(header + rules.join(",") + footer);

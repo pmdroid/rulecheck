@@ -1,6 +1,7 @@
 use crate::policy::{
     CompiledRule, Location, MAX_FILE, Matcher, Result, Span, bounded_read, valid_path,
 };
+use crate::syntax::Trees;
 use rustix::fs::{Mode, OFlags, open, openat};
 use rustix::io::Errno;
 use std::fs::File;
@@ -217,19 +218,20 @@ fn scan<'a, 'p>(
             None
         };
 
+        let mut trees = Trees::default();
         for (index, rule) in &mut applicable {
             hits[index] += 1;
             let found = match matches {
                 Matches::First => rule
                     .matcher
-                    .find(path, content.as_deref())
+                    .find(path, content.as_deref(), &mut trees)
                     .map(Vec::from_iter),
                 // Syntax rules are not counted. Plain --all-matches refuses them
                 // before the scan; a baseline check gives them no allowance, so
                 // their first match per file is enough to fail it.
                 Matches::All if matches!(rule.matcher, Matcher::Syntax(_)) => rule
                     .matcher
-                    .find(path, content.as_deref())
+                    .find(path, content.as_deref(), &mut trees)
                     .map(Vec::from_iter),
                 // One more than fits, so an overflow is detected without
                 // collecting every match of a huge file.

@@ -1,4 +1,4 @@
-use crate::syntax::{Selector, SyntaxMatcher};
+use crate::syntax::{Selector, SyntaxMatcher, Trees};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Deserializer};
@@ -8,8 +8,10 @@ use std::collections::BTreeSet;
 use std::io::Read;
 
 pub const MAX_FILE: usize = 1024 * 1024;
-const MAX_POLICY: usize = 1024 * 1024;
-const MAX_RULES: usize = 128;
+/// Policy limits, kept equal to `maxPolicy` and `maxRules` in tools/build.mjs,
+/// `maxPolicy` in bin/rulecheck.mjs and `maxItems` in schema/policy-v1.json.
+const MAX_POLICY: usize = 4 * 1024 * 1024;
+const MAX_RULES: usize = 1024;
 const MAX_PROVENANCE_URL: usize = 2048;
 pub type Result<T> = std::result::Result<T, String>;
 
@@ -404,16 +406,20 @@ impl Matcher {
     }
 
     pub fn location(&self, path: &str, content: Option<&str>) -> Result<Option<Location>> {
-        Ok(self.find(path, content)?.map(|(location, _)| location))
+        Ok(self
+            .find(path, content, &mut Trees::default())?
+            .map(|(location, _)| location))
     }
 
     /// The first match as a one-based line and Unicode scalar column, plus its
     /// zero-based, half-open UTF-8 byte range. Forbidden paths have no range.
-    /// Only a syntax rule can fail, when its file does not parse.
+    /// Only a syntax rule can fail, when its file does not parse. `trees`
+    /// caches the file's parse for the other syntax rules that apply to it.
     pub fn find(
         &self,
         path: &str,
         content: Option<&str>,
+        trees: &mut Trees,
     ) -> Result<Option<(Location, Option<Span>)>> {
         let Some(content) = content else {
             return Ok(matches!(self, Self::ForbiddenPath)
@@ -428,7 +434,7 @@ impl Matcher {
                 start: found.start(),
                 end: found.end(),
             }),
-            Self::Syntax(selector) => selector.find(path, content)?,
+            Self::Syntax(selector) => selector.find(path, content, trees)?,
             Self::ForbiddenPath => return Ok(Some((Location { line: 1, column: 1 }, None))),
         };
         Ok(span.map(|span| (locate(content, span.start), Some(span))))
@@ -478,7 +484,12 @@ impl Matcher {
             (Self::Syntax(_), _) => {
                 return Err(self.all_matches_unsupported().unwrap_or_default().into());
             }
-            _ => return Ok(self.find(path, content)?.into_iter().collect()),
+            _ => {
+                return Ok(self
+                    .find(path, content, &mut Trees::default())?
+                    .into_iter()
+                    .collect());
+            }
         };
         let content = content.unwrap_or_default();
         // Matches ascend, so lines and columns are counted in one pass.

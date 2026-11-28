@@ -334,8 +334,8 @@ fn input_bounds_fail_closed() {
     let rule = text_rule("a/marker", &["src/**/*.ts"], "literal", "MARKER");
     let marker = policy(std::slice::from_ref(&rule));
 
-    // Policy input over 1 MiB: unread, so there is no digest.
-    let mut large = vec![b' '; 1024 * 1024 + 1];
+    // Policy input over 4 MiB: unread, so there is no digest.
+    let mut large = vec![b' '; 4 * 1024 * 1024 + 1];
     large[0] = b'{';
     let (result, _) = check_json(&[], &large, root, 2);
     assert_eq!(result["policy"]["sha256"], Value::Null);
@@ -343,11 +343,11 @@ fn input_bounds_fail_closed() {
         result["diagnostics"][0]["message"]
             .as_str()
             .unwrap()
-            .contains("exceeds 1048576 bytes")
+            .contains("exceeds 4194304 bytes")
     );
 
-    // More than 128 rules.
-    let many: Vec<_> = (0..129)
+    // More than 1024 rules.
+    let many: Vec<_> = (0..1025)
         .map(|n| text_rule(&format!("a/r{n}"), &["src/**/*.ts"], "literal", "MARKER"))
         .collect();
     let body = json!({ "version": 1, "rules": many }).to_string();
@@ -356,7 +356,7 @@ fn input_bounds_fail_closed() {
         result["diagnostics"][0]["message"]
             .as_str()
             .unwrap()
-            .contains("1 to 128 rules")
+            .contains("1 to 1024 rules")
     );
 
     // A scoped text file over 1 MiB.
