@@ -179,7 +179,7 @@ function checkShape(rule, fail) {
   }
 
   if (!isObject(rule)) fail(undefined, undefined, "The rule must be an object", "Pass an object literal to defineRule.");
-  fields(rule, "the rule", ["id", "kind", "paths", "exclude", "anchors", "remediation", "pattern", "selector", "provenance", "fixtures"],
+  fields(rule, "the rule", ["id", "kind", "paths", "exclude", "anchors", "remediation", "pattern", "requires", "selector", "provenance", "fixtures"],
     ["id", "kind", "paths", "remediation", "fixtures"]);
   expect(rule, "id", "rule", (value) => typeof value === "string", "a string");
   expect(rule, "kind", "rule", (value) => ["text", "forbidden-path", "syntax"].includes(value),
@@ -206,6 +206,10 @@ function checkShape(rule, fail) {
   if (rule.kind !== "text" && Object.hasOwn(rule, "pattern")) {
     fail(rule, "pattern", `${syntax ? "Syntax" : "Forbidden-path"} rules have no pattern`,
       syntax ? "Use selector instead of pattern." : "Remove pattern.");
+  }
+  if (rule.kind !== "text" && Object.hasOwn(rule, "requires")) {
+    fail(rule, "requires", `${syntax ? "Syntax" : "Forbidden-path"} rules have no requires`,
+      'Remove requires or use kind: "text".');
   }
   if (syntax && !Object.hasOwn(rule, "selector")) {
     fail(rule, undefined, "Syntax rules require a selector", 'Add selector: { language: "typescript", node: "comment" }.');
@@ -241,6 +245,12 @@ function checkShape(rule, fail) {
     fields(rule.pattern, "the pattern", ["kind", "value"], ["kind", "value"]);
     expect(rule.pattern, "kind", "pattern", (value) => ["literal", "regex"].includes(value), '"literal" or "regex"');
     expect(rule.pattern, "value", "pattern", (value) => typeof value === "string", "a string");
+    if (Object.hasOwn(rule, "requires")) {
+      expect(rule, "requires", "rule", isObject, "a pattern object");
+      fields(rule.requires, "the requires pattern", ["kind", "value"], ["kind", "value"]);
+      expect(rule.requires, "kind", "requires", (value) => ["literal", "regex"].includes(value), '"literal" or "regex"');
+      expect(rule.requires, "value", "requires", (value) => typeof value === "string", "a string");
+    }
   }
 
   for (const [index, fixture] of rule.fixtures.entries()) {

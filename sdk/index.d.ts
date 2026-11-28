@@ -52,6 +52,12 @@ export type Rule = RuleFields & (
   | {
       kind: "text";
       pattern: { kind: "literal" | "regex"; value: string };
+      /**
+       * Makes the rule conditional: a file where `pattern` matches must also contain this text
+       * somewhere. Findings point at the `pattern` matches, and a file that matches `requires`
+       * anywhere reports none of them. A regex that can match empty text is refused.
+       */
+      requires?: { kind: "literal" | "regex"; value: string };
       fixtures: readonly TextFixture[];
     }
   | {

@@ -51,6 +51,16 @@
             "value": { "type": "string", "minLength": 1, "maxLength": 4096 }
           }
         },
+        "requires": {
+          "description": "Text rules only. Text that must appear somewhere in the same file when pattern matches: a file where pattern matches and requires does not reports each pattern match, and a file that also matches requires reports none. A regex that can match empty text is refused.",
+          "type": "object",
+          "required": ["kind", "value"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "enum": ["literal", "regex"] },
+            "value": { "type": "string", "minLength": 1, "maxLength": 4096 }
+          }
+        },
         "selector": { "$ref": "#/$defs/selector" },
         "provenance": {
           "type": "object",
@@ -84,6 +94,7 @@
           "not": { "required": ["pattern"] },
           "properties": {
             "anchors": { "not": {} },
+            "requires": { "not": {} },
             "fixtures": { "items": { "required": ["content"], "properties": { "expectAll": { "not": {} } } } }
           }
         },
@@ -91,6 +102,7 @@
           "not": { "required": ["pattern"] },
           "properties": {
             "selector": { "not": {} },
+            "requires": { "not": {} },
             "fixtures": {
               "items": { "not": { "required": ["content"] }, "properties": { "expectAll": { "not": {} } } }
             }
