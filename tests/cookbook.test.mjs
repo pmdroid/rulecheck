@@ -67,6 +67,11 @@ const recipes = {
   }, "config/private-2b.toml:1:1: [config/no-machine-specific-files] Keep machine-specific files out of Git.\n"
     + "config/team/local-1a.toml:1:1: [config/no-machine-specific-files] Keep machine-specific files out of Git.\n"
     + "docker-compose.override.yml:1:1: [config/no-machine-specific-files] Keep machine-specific files out of Git."),
+  message: recipe({ "config/app.toml": "cache = true\n" },
+    { "config/app.toml": "legacy_cache = true\nname = \"app\"\nlegacy_port = 8080 # old\n" },
+    "config/app.toml:1:1: [config/no-legacy-settings] legacy_cache is set to true. Remove legacy_* settings; the defaults replace them.\n"
+    + "config/app.toml:3:1: [config/no-legacy-settings] legacy_port is set to 8080. Remove legacy_* settings; the defaults replace them.",
+    ["--all-matches"]),
   syntax: recipe({
     "src/total.ts": "// Totals for the report.\nexport function total(xs: number[]): number {\n  // TODO: use reduce\n  let sum = 0;\n  for (const x of xs) sum += x;\n  return sum;\n}\n",
     "src/hint.tsx": "export const Hint = () => <p>// type a path</p>;\n",

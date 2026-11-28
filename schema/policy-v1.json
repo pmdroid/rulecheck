@@ -66,6 +66,12 @@
           }
         },
         "remediation": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "message": {
+          "description": "Optional per-finding detail for a regex text rule: plain text with {name} references to the pattern's named groups, and {{ or }} for a literal brace. Rulecheck checks every reference when the policy loads and reports the rendered text in a finding's message, beside the fixed remediation.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
         "pattern": {
           "type": "object",
           "required": ["kind", "value"],
@@ -119,6 +125,7 @@
           "properties": {
             "anchors": { "not": {} },
             "requires": { "not": {} },
+            "message": { "not": {} },
             "fixtures": { "items": { "required": ["content"], "properties": { "expectAll": { "not": {} } } } }
           }
         },
@@ -128,6 +135,7 @@
             "selector": { "not": {} },
             "requires": { "not": {} },
             "skipIfContent": { "not": {} },
+            "message": { "not": {} },
             "fixtures": {
               "items": { "not": { "required": ["content"] }, "properties": { "expectAll": { "not": {} } } }
             }

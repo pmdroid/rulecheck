@@ -26,6 +26,8 @@ pub struct Finding<'a> {
     pub id: &'a str,
     pub span: Option<Span>,
     pub remediation: &'a str,
+    /// The rule's rendered message template, if it has one.
+    pub message: Option<String>,
 }
 
 /// How many findings each rule reports per file.
@@ -284,6 +286,7 @@ fn scan<'a, 'p>(
                     location,
                     id: &rule.id,
                     remediation: &rule.remediation,
+                    message: rule.message(content.as_deref(), span),
                     span,
                 });
             }

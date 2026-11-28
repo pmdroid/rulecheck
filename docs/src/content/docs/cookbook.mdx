@@ -26,6 +26,7 @@ import requires from '../../../examples/rules/requires.rule.ts?raw';
 import regexBackreference from '../../../examples/rules/regex-backreference.rule.ts?raw';
 import regexLookahead from '../../../examples/rules/regex-lookahead.rule.ts?raw';
 import regexLookbehind from '../../../examples/rules/regex-lookbehind.rule.ts?raw';
+import message from '../../../examples/rules/message.rule.ts?raw';
 
 Rulecheck supports four matcher forms: **literal text**, **regex text**, **forbidden path**, and **syntax**. The first three recipes show the text and path forms, the middle recipes show how to control where a rule applies, and the [syntax recipes](#comments-in-function-bodies) select TypeScript, TSX, Rust, Go and Python syntax nodes. The code below comes from the same TypeScript files that CI runs. Copy a recipe into `.rulecheck/rules/` and adapt its ID, paths, and fixtures.
 
@@ -190,6 +191,21 @@ src/poll.ts:1:12: [source/interval-needs-clear] Keep the interval handle and cal
 ```
 
 `requires` takes the same `{ kind, value }` as `pattern`, and only text rules have it. A regex requirement that can match empty text, such as `x*` or `(clearInterval\()?`, is refused when the policy loads, because every file would meet it and the rule could never report. The requirement is file-wide presence only. It doesn't tie a trigger to a nearby match or to the same function. A file whose text can't be read as UTF-8, or a scoped path that can't be read without following a symlink, exits 2 and doesn't count as meeting the requirement.
+
+## Say what each finding matched
+
+A regex rule's `message` template names the matched text in each finding. Its `{key}` and `{value}` references are replaced by the pattern's named groups for that match, and the fixed `remediation` follows. The [authoring guide](../authoring/#per-finding-messages) lists the template rules, escaping and length caps.
+
+<Code code={message} lang="ts" title="message.rule.ts" />
+
+The runner checks a clean file, then a file with two legacy settings. `rulecheck check --all-matches` reports a different message for each match:
+
+```text
+config/app.toml:1:1: [config/no-legacy-settings] legacy_cache is set to true. Remove legacy_* settings; the defaults replace them.
+config/app.toml:3:1: [config/no-legacy-settings] legacy_port is set to 8080. Remove legacy_* settings; the defaults replace them.
+```
+
+In `--format json` each finding has the rendered text in `message` and the fixed text in `remediation`.
 
 ## Comments in function bodies
 

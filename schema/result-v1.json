@@ -106,7 +106,12 @@
         "column": { "type": "integer", "minimum": 1 },
         "byteStart": { "type": ["integer", "null"], "minimum": 0 },
         "byteEnd": { "type": ["integer", "null"], "minimum": 0 },
-        "remediation": { "type": "string" }
+        "remediation": { "type": "string" },
+        "message": {
+          "description": "Present only when the rule has a message template: the template rendered with the named groups of this match. A group that did not take part renders as empty text. Each captured value has control characters and invisible Unicode format characters escaped as \\n, \\r, \\t or \\u{hex}, and is cut to 64 characters with a trailing U+2026; the whole message is cut to 1024 bytes the same way. Absent for rules without a template.",
+          "type": "string",
+          "maxLength": 1024
+        }
       }
     },
     "diagnostic": {

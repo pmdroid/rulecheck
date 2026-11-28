@@ -1,5 +1,6 @@
 mod baseline;
 mod dialect;
+mod message;
 mod policy;
 mod repository;
 mod syntax;
@@ -385,10 +386,16 @@ fn check(options: &Options) -> Result<u8> {
         let shown = shown(&report, &comparison);
         for finding in &shown {
             let Location { line, column } = finding.location;
-            println!(
-                "{}:{line}:{column}: [{}] {}",
-                finding.path, finding.id, finding.remediation
-            );
+            match &finding.message {
+                None => println!(
+                    "{}:{line}:{column}: [{}] {}",
+                    finding.path, finding.id, finding.remediation
+                ),
+                Some(message) => println!(
+                    "{}:{line}:{column}: [{}] {message} {}",
+                    finding.path, finding.id, finding.remediation
+                ),
+            }
         }
         let tightened = tighten(&comparison, true);
         for id in &report.empty_scopes {
@@ -626,7 +633,7 @@ fn all_matches_supported(rules: &[&CompiledRule]) -> Result<()> {
 }
 
 fn finding_json(finding: &repository::Finding) -> Value {
-    json!({
+    let mut value = json!({
         "ruleId": finding.id,
         "path": finding.path,
         "line": finding.location.line,
@@ -634,7 +641,12 @@ fn finding_json(finding: &repository::Finding) -> Value {
         "byteStart": finding.span.map(|span| span.start),
         "byteEnd": finding.span.map(|span| span.end),
         "remediation": finding.remediation,
-    })
+    });
+    // Present only for a rule with a message template, so other findings keep their v1 shape.
+    if let Some(message) = &finding.message {
+        value["message"] = json!(message);
+    }
+    value
 }
 
 fn test(rules: &[&CompiledRule]) -> bool {

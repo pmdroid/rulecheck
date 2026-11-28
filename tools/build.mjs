@@ -240,7 +240,7 @@ function checkShape(rule, fail, setNames) {
   }
 
   if (!isObject(rule)) fail(undefined, undefined, "The rule must be an object", "Pass an object literal to defineRule.");
-  fields(rule, "the rule", ["id", "kind", "paths", "exclude", "excludeSets", "skipIfContent", "anchors", "remediation", "pattern",
+  fields(rule, "the rule", ["id", "kind", "paths", "exclude", "excludeSets", "skipIfContent", "anchors", "remediation", "message", "pattern",
     "requires", "selector", "provenance", "fixtures"], ["id", "kind", "paths", "remediation", "fixtures"]);
   expect(rule, "id", "rule", (value) => typeof value === "string", "a string");
   expect(rule, "kind", "rule", (value) => ["text", "forbidden-path", "syntax"].includes(value),
@@ -272,6 +272,7 @@ function checkShape(rule, fail, setNames) {
       (value) => Number.isInteger(value) && value >= 1 && value <= 65536, "an integer from 1 to 65536");
   }
   expect(rule, "remediation", "rule", (value) => typeof value === "string", "a string");
+  expect(rule, "message", "rule", (value) => typeof value === "string", "a string");
   expect(rule, "fixtures", "rule", (value) => Array.isArray(value), "an array of fixtures");
   if (Object.hasOwn(rule, "provenance")) {
     expect(rule, "provenance", "rule", isObject, "an object { finding }");
@@ -319,6 +320,11 @@ function checkShape(rule, fail, setNames) {
         expect(filter, "value", label, (value) => typeof value === "string", "a string");
       }
     }
+  }
+  // Mirrors Rule::compile in src/policy.rs, which also checks each {name} reference.
+  if (Object.hasOwn(rule, "message") && (rule.kind !== "text" || rule.pattern?.kind !== "regex")) {
+    fail(rule, "message", "Only regex text rules have a message",
+      "Use a regex pattern with named groups, or remove message.");
   }
   if (rule.kind === "text") {
     expect(rule, "pattern", "rule", isObject, "a pattern object");
