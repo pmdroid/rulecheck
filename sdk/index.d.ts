@@ -61,6 +61,13 @@ export type Rule = RuleFields & (
     }
   | {
       kind: "forbidden-path";
+      /**
+       * Optional globs for files that show the guarded area exists, such as a file that always
+       * sits next to the forbidden one. When no file matches any anchor, the check exits 2
+       * instead of passing, because the area moved or vanished. Without anchors, no matching
+       * forbidden path is a pass. An anchor must not match a fixture that expects a finding.
+       */
+      anchors?: readonly string[];
       fixtures: readonly { path: string; expect: Location | null }[];
     }
 );

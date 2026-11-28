@@ -230,6 +230,10 @@ fn select<'a>(rules: &'a [CompiledRule], prefix: Option<&str>) -> Result<Vec<&'a
 
 const EMPTY_SCOPE: &str = "empty text scope: track a matching file or update the rule's path globs";
 const EMPTY_SCOPES: &str = "one or more text rules matched no repository files";
+const MISSING_ANCHOR: &str = "missing anchor: no file matches the rule's anchors, so the area it \
+guards moved or vanished and an absent forbidden path proves nothing; restore the anchor or \
+update anchors and paths together";
+const MISSING_ANCHORS: &str = "one or more forbidden-path rules found none of their anchors";
 const UNEVALUATED: &str =
     "not evaluated on every file in scope: the scan stopped at the text budget";
 
@@ -248,6 +252,22 @@ fn budget_message(partial: &Partial) -> String {
         partial.read,
         if count == 1 { "rule was" } else { "rules were" },
     )
+}
+
+/// The summary lines of a scan that cannot judge, in output order: empty text
+/// scopes, missing anchors, then a budget stop. Empty when the scan judged.
+fn cannot_judge(report: &Report) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if !report.empty_scopes.is_empty() {
+        reasons.push(EMPTY_SCOPES.to_owned());
+    }
+    if !report.missing_anchors.is_empty() {
+        reasons.push(MISSING_ANCHORS.to_owned());
+    }
+    if let Some(partial) = &report.partial {
+        reasons.push(budget_message(partial));
+    }
+    reasons
 }
 
 fn scan<'a>(options: &Options, rules: &[&'a CompiledRule], matches: Matches) -> Result<Report<'a>> {
@@ -373,19 +393,21 @@ fn check(options: &Options) -> Result<u8> {
         for id in &report.empty_scopes {
             eprintln!("[{id}] {EMPTY_SCOPE}");
         }
+        for id in &report.missing_anchors {
+            eprintln!("[{id}] {MISSING_ANCHOR}");
+        }
         if let Some(partial) = &report.partial {
             for id in &partial.unevaluated {
                 eprintln!("[{id}] {UNEVALUATED}");
             }
-            if !report.empty_scopes.is_empty() {
-                eprintln!("rulecheck: {EMPTY_SCOPES}");
-            }
-            return Err(budget_message(partial));
         }
-        if !report.empty_scopes.is_empty() {
-            return Err(EMPTY_SCOPES.into());
-        }
-        return Ok(u8::from(!shown.is_empty() || tightened));
+        // Every reason but the last is printed here; main prints the last.
+        let mut reasons = cannot_judge(&report);
+        let Some(last) = reasons.pop() else {
+            return Ok(u8::from(!shown.is_empty() || tightened));
+        };
+        reasons.iter().for_each(|reason| eprintln!("rulecheck: {reason}"));
+        return Err(last);
     }
 
     let mut diagnostics = Vec::new();
@@ -426,18 +448,21 @@ fn check(options: &Options) -> Result<u8> {
                 eprintln!("[{id}] {EMPTY_SCOPE}");
                 diagnostics.push(json!({ "ruleId": id, "message": EMPTY_SCOPE }));
             }
-            if !report.empty_scopes.is_empty() {
-                eprintln!("rulecheck: {EMPTY_SCOPES}");
-                diagnostics.push(json!({ "ruleId": null, "message": EMPTY_SCOPES }));
+            for id in &report.missing_anchors {
+                eprintln!("[{id}] {MISSING_ANCHOR}");
+                diagnostics.push(json!({ "ruleId": id, "message": MISSING_ANCHOR }));
             }
             if let Some(partial) = &report.partial {
                 for id in &partial.unevaluated {
                     eprintln!("[{id}] {UNEVALUATED}");
                     diagnostics.push(json!({ "ruleId": id, "message": UNEVALUATED }));
                 }
-                let message = budget_message(partial);
+            }
+            for message in cannot_judge(report) {
                 eprintln!("rulecheck: {message}");
                 diagnostics.push(json!({ "ruleId": null, "message": message }));
+            }
+            if let Some(partial) = &report.partial {
                 partial_json = Some(json!({
                     "reason": "text-budget",
                     "textBudgetBytes": partial.budget,
@@ -536,6 +561,9 @@ fn regenerate(options: &Options) -> Result<u8> {
     for id in &report.empty_scopes {
         eprintln!("[{id}] {EMPTY_SCOPE}");
     }
+    for id in &report.missing_anchors {
+        eprintln!("[{id}] {MISSING_ANCHOR}");
+    }
     if let Some(partial) = &report.partial {
         for id in &partial.unevaluated {
             eprintln!("[{id}] {UNEVALUATED}");
@@ -545,9 +573,11 @@ fn regenerate(options: &Options) -> Result<u8> {
             budget_message(partial)
         ));
     }
-    if !report.empty_scopes.is_empty() {
+    let reasons = cannot_judge(&report);
+    if !reasons.is_empty() {
         return Err(format!(
-            "{EMPTY_SCOPES}; a baseline is recorded only from a complete scan, so nothing was written"
+            "{}; a baseline is recorded only from a complete scan, so nothing was written",
+            reasons.join("; ")
         ));
     }
     let baseline = baseline::generate(existing, &selected, prefix, &report.findings)?;

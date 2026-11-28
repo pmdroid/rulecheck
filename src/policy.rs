@@ -28,6 +28,8 @@ struct Rule {
     paths: Vec<String>,
     #[serde(default, deserialize_with = "present")]
     exclude: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "present")]
+    anchors: Option<Vec<String>>,
     remediation: String,
     #[serde(default, deserialize_with = "present")]
     pattern: Option<Pattern>,
@@ -104,6 +106,10 @@ pub struct CompiledRule {
     pub remediation: String,
     pub scope: GlobSet,
     pub exclude: GlobSet,
+    /// Forbidden-path rules only: globs for files that must exist for an
+    /// absent forbidden path to count as clean. `None` keeps the v1 default,
+    /// where no matching file is always a pass.
+    pub anchors: Option<GlobSet>,
     pub matcher: Matcher,
     /// Digest of what decides the matches inside one file (see `matcher_digest`).
     /// A baseline entry recorded under another digest is incompatible.
@@ -276,6 +282,22 @@ impl Rule {
             Some(exclude) if (1..=16).contains(&exclude.len()) => globs("exclude", exclude)?,
             Some(_) => return Err("provide 1 to 16 exclude globs or omit exclude".into()),
         };
+        let anchors = match (&self.anchors, self.kind) {
+            (None, _) => None,
+            (Some(_), Kind::Text | Kind::Syntax) => {
+                return Err(
+                    "anchors apply to forbidden-path rules only; text and syntax rules \
+                     already exit 2 when no file is in scope"
+                        .into(),
+                );
+            }
+            (Some(anchors), Kind::ForbiddenPath) if (1..=16).contains(&anchors.len()) => {
+                Some(globs("anchor", anchors)?)
+            }
+            (Some(_), Kind::ForbiddenPath) => {
+                return Err("provide 1 to 16 anchor globs or omit anchors".into());
+            }
+        };
 
         let matcher = match (self.kind, self.pattern, self.selector) {
             (Kind::Text, Some(pattern), None) => Matcher::compile(pattern)?,
@@ -333,6 +355,13 @@ impl Rule {
             {
                 return Err(format!("{path}: fixture uses one-based locations"));
             }
+            // A forbidden path that is also an anchor could never be clean.
+            if !locations.is_empty() && anchors.as_ref().is_some_and(|set| set.is_match(&path)) {
+                return Err(format!(
+                    "{path}: a forbidden path must not match the rule's anchors; anchor a file \
+                     that should always exist next to it"
+                ));
+            }
             fixtures.push(Fixture {
                 path,
                 content: fixture.content,
@@ -347,6 +376,7 @@ impl Rule {
             matcher_digest: String::new(),
             scope,
             exclude,
+            anchors,
             fixtures,
         })
     }
@@ -518,5 +548,10 @@ fn locate(content: &str, start: usize) -> Location {
 impl CompiledRule {
     pub fn applies_to(&self, path: &str) -> bool {
         self.scope.is_match(path) && !self.exclude.is_match(path)
+    }
+
+    /// Whether `path` is one of the files that show the guarded area exists.
+    pub fn anchored_by(&self, path: &str) -> bool {
+        self.anchors.as_ref().is_some_and(|set| set.is_match(path))
     }
 }

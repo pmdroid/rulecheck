@@ -40,9 +40,13 @@ pub enum Matches {
 /// candidate file, so the scan cannot judge them and the command must exit 2.
 /// With `partial` set the scan stopped at the text budget: `findings` are only
 /// those from the files before the stop, and the command must exit 2.
+/// Forbidden-path rules in `missing_anchors` declare anchors and no inventory
+/// file matched one, so the area they guard moved or vanished and the command
+/// must exit 2 as well.
 pub struct Report<'a> {
     pub findings: Vec<Finding<'a>>,
     pub empty_scopes: Vec<&'a str>,
+    pub missing_anchors: Vec<&'a str>,
     pub partial: Option<Partial<'a>>,
 }
 
@@ -168,20 +172,40 @@ fn scan<'a, 'p>(
     let mut text_bytes = 0;
     let mut partial: Option<Partial> = None;
     let mut unevaluated = vec![false; rules.len()];
+    let mut anchored = vec![false; rules.len()];
     for path in paths {
+        let anchoring: Vec<_> = rules
+            .iter()
+            .enumerate()
+            .filter(|(index, rule)| !anchored[*index] && rule.anchored_by(path))
+            .collect();
+        // Anchors are presence checks: the file is opened but never read, so
+        // they cost no text budget and are checked after a budget stop too.
+        let mut mark_anchors = |present: bool| {
+            if present {
+                anchoring.iter().for_each(|(index, _)| anchored[*index] = true);
+            }
+        };
         let mut applicable = rules
             .iter()
             .enumerate()
             .filter(|(_, rule)| rule.applies_to(path));
-        let Some((_, first)) = applicable.clone().next() else {
+        let first = applicable.clone().next();
+        let Some((_, first)) = first.filter(|_| partial.is_none()) else {
+            if let Some((_, rule)) = anchoring.first() {
+                let present = read(path, false)
+                    .map_err(|err| format!("[{}] {path}: {err}", rule.id))?
+                    .is_some();
+                mark_anchors(present);
+            }
+            // After a budget stop nothing more is read; the remaining
+            // candidates only mark which rules were not evaluated on every
+            // file in scope.
+            if partial.is_some() {
+                applicable.for_each(|(index, _)| unevaluated[index] = true);
+            }
             continue;
         };
-        // After a budget stop nothing more is read; the remaining candidates
-        // only mark which rules were not evaluated on every file in scope.
-        if partial.is_some() {
-            applicable.for_each(|(index, _)| unevaluated[index] = true);
-            continue;
-        }
         let context = |err| format!("[{}] {path}: {err}", first.id);
         let text_rule = applicable
             .clone()
@@ -195,6 +219,7 @@ fn scan<'a, 'p>(
         let Some(bytes) = read(path, text_rule.is_some()).map_err(read_context)? else {
             continue;
         };
+        mark_anchors(true);
 
         let content = if text_rule.is_some() {
             // Each file is read once for all its rules and counted once.
@@ -262,6 +287,12 @@ fn scan<'a, 'p>(
         .filter(|((rule, count), skipped)| rule.matcher.needs_text() && *count == 0 && !**skipped)
         .map(|((rule, _), _)| rule.id.as_str())
         .collect();
+    let missing_anchors = rules
+        .iter()
+        .zip(&anchored)
+        .filter(|(rule, found)| rule.anchors.is_some() && !**found)
+        .map(|(rule, _)| rule.id.as_str())
+        .collect();
     if let Some(partial) = &mut partial {
         partial.unevaluated = rules
             .iter()
@@ -274,6 +305,7 @@ fn scan<'a, 'p>(
     Ok(Report {
         findings,
         empty_scopes,
+        missing_anchors,
         partial,
     })
 }

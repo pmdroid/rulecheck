@@ -34,6 +34,13 @@
           "maxItems": 16,
           "items": { "type": "string", "minLength": 1, "maxLength": 256 }
         },
+        "anchors": {
+          "description": "Forbidden-path rules only. Globs for files that show the guarded area exists. When no file matches any anchor, the check cannot judge and exits 2. Without anchors, no matching forbidden path is always a pass.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+        },
         "remediation": { "type": "string", "minLength": 1, "maxLength": 512 },
         "pattern": {
           "type": "object",
@@ -68,7 +75,7 @@
       "then": {
         "required": ["pattern"],
         "not": { "required": ["selector"] },
-        "properties": { "fixtures": { "items": { "required": ["content"] } } }
+        "properties": { "anchors": { "not": {} }, "fixtures": { "items": { "required": ["content"] } } }
       },
       "else": {
         "if": { "properties": { "kind": { "const": "syntax" } } },
@@ -76,6 +83,7 @@
           "required": ["selector"],
           "not": { "required": ["pattern"] },
           "properties": {
+            "anchors": { "not": {} },
             "fixtures": { "items": { "required": ["content"], "properties": { "expectAll": { "not": {} } } } }
           }
         },

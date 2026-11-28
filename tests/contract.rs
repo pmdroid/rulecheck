@@ -506,6 +506,7 @@ fn schema_sdk_and_evaluator_accept_the_same_rule_fields() {
     assert_eq!(
         fields,
         [
+            "anchors",
             "exclude",
             "fixtures",
             "id",
@@ -540,6 +541,7 @@ fn schema_sdk_and_evaluator_accept_the_same_rule_fields() {
         "id: string;",
         "paths: readonly string[];",
         "exclude?: readonly string[];",
+        "anchors?: readonly string[];",
         "provenance?: { finding: string };",
         "remediation: string;",
         "kind: \"text\";",

@@ -179,13 +179,18 @@ function checkShape(rule, fail) {
   }
 
   if (!isObject(rule)) fail(undefined, undefined, "The rule must be an object", "Pass an object literal to defineRule.");
-  fields(rule, "the rule", ["id", "kind", "paths", "exclude", "remediation", "pattern", "selector", "provenance", "fixtures"],
+  fields(rule, "the rule", ["id", "kind", "paths", "exclude", "anchors", "remediation", "pattern", "selector", "provenance", "fixtures"],
     ["id", "kind", "paths", "remediation", "fixtures"]);
   expect(rule, "id", "rule", (value) => typeof value === "string", "a string");
   expect(rule, "kind", "rule", (value) => ["text", "forbidden-path", "syntax"].includes(value),
     '"text", "forbidden-path" or "syntax"');
   expect(rule, "paths", "rule", isStrings, "an array of glob strings");
   expect(rule, "exclude", "rule", isStrings, "an array of glob strings");
+  expect(rule, "anchors", "rule", isStrings, "an array of glob strings");
+  if (rule.kind !== "forbidden-path" && Object.hasOwn(rule, "anchors")) {
+    fail(rule, "anchors", "Only forbidden-path rules have anchors",
+      'Remove anchors: text and syntax rules already exit 2 when no file is in scope.');
+  }
   expect(rule, "remediation", "rule", (value) => typeof value === "string", "a string");
   expect(rule, "fixtures", "rule", (value) => Array.isArray(value), "an array of fixtures");
   if (Object.hasOwn(rule, "provenance")) {
