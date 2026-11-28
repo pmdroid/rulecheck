@@ -21,6 +21,14 @@ rule command, Rulecheck installs its pinned TypeScript compiler into a user cach
 Later runs reuse the cache. No project `npm install`, separate CLI build step, or
 generated policy file is needed. Keep the two installed executables together.
 
+To install the compiler from a private registry mirror (`RULECHECK_NPM_REGISTRY`,
+with credentials in `RULECHECK_NPM_USERCONFIG`) or from a preseeded tarball with
+no network (`RULECHECK_COMPILER_TARBALL`), see
+[Set up the compiler from a mirror or offline](docs/src/content/docs/quickstart.md#set-up-the-compiler-from-a-mirror-or-offline).
+Neither falls back to public npm, and both keep the lockfile's version and
+integrity. Rule commands still need Node.js 20 or later, and the first-run
+setup needs npm.
+
 ## Check a repository
 
 Run these commands in any other Git repository. This demo creates a throwaway one:
