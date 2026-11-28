@@ -2,6 +2,8 @@ use crate::syntax::{Selector, SyntaxMatcher};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Deserializer};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::io::Read;
 
@@ -103,6 +105,9 @@ pub struct CompiledRule {
     pub scope: GlobSet,
     pub exclude: GlobSet,
     pub matcher: Matcher,
+    /// Digest of what decides the matches inside one file (see `matcher_digest`).
+    /// A baseline entry recorded under another digest is incompatible.
+    pub matcher_digest: String,
     pub fixtures: Vec<Fixture>,
 }
 
@@ -126,6 +131,69 @@ pub fn valid_path(path: &str) -> bool {
         && path
             .split('/')
             .all(|part| !matches!(part, "" | "." | ".." | ".git"))
+}
+
+/// Rule IDs are slash-separated parts of lowercase letters, digits and hyphens.
+pub fn valid_rule_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id.split('/').all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+        })
+}
+
+/// `sha256:` over the canonical JSON of a rule's `kind`, `pattern` and
+/// `selector`, which decide what matches inside one file. The ID, scope,
+/// remediation, provenance and fixtures are left out: none of them changes the
+/// count in a file that stays in scope, and a file that enters the scope has
+/// no baseline allowance. The `counting` version changes whenever Rulecheck's
+/// all-match semantics do, so old baselines stop matching.
+fn matcher_digest(rule: &Value) -> String {
+    let mut semantics = serde_json::Map::new();
+    semantics.insert("counting".into(), Value::from(1));
+    for key in ["kind", "pattern", "selector"] {
+        if let Some(value) = rule.get(key) {
+            semantics.insert(key.into(), value.clone());
+        }
+    }
+    let mut text = String::new();
+    canonical(&Value::Object(semantics), &mut text);
+    format!("sha256:{:x}", Sha256::digest(text.as_bytes()))
+}
+
+/// Compact JSON with object keys sorted at every level, independent of how
+/// `serde_json` orders maps.
+fn canonical(value: &Value, out: &mut String) {
+    match value {
+        Value::Object(map) => {
+            let mut keys: Vec<_> = map.keys().collect();
+            keys.sort();
+            out.push('{');
+            for (index, key) in keys.into_iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                out.push_str(&Value::from(key.as_str()).to_string());
+                out.push(':');
+                canonical(&map[key], out);
+            }
+            out.push('}');
+        }
+        Value::Array(items) => {
+            out.push('[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                canonical(item, out);
+            }
+            out.push(']');
+        }
+        scalar => out.push_str(&scalar.to_string()),
+    }
 }
 
 pub fn bounded_read(reader: impl Read, limit: usize) -> std::io::Result<Vec<u8>> {
@@ -156,18 +224,15 @@ pub fn load(bytes: &[u8]) -> Result<Vec<CompiledRule>> {
         return Err(format!("policy must have 1 to {MAX_RULES} rules"));
     }
 
+    // The typed parse above accepted the document, so the raw rules line up with it.
+    let raw: Value =
+        serde_json::from_slice(bytes).map_err(|err| format!("invalid policy JSON: {err}"))?;
+    let raw = raw["rules"].as_array().ok_or("invalid policy JSON")?;
+
     let mut ids = BTreeSet::new();
     let mut compiled = Vec::with_capacity(policy.rules.len());
-    for rule in policy.rules {
-        if rule.id.is_empty()
-            || rule.id.len() > 128
-            || !rule.id.split('/').all(|part| {
-                !part.is_empty()
-                    && part
-                        .bytes()
-                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
-            })
-        {
+    for (rule, raw) in policy.rules.into_iter().zip(raw) {
+        if !valid_rule_id(&rule.id) {
             return Err(format!(
                 "invalid rule ID {:?}; use lowercase letters, digits, hyphens and slashes",
                 rule.id
@@ -177,7 +242,9 @@ pub fn load(bytes: &[u8]) -> Result<Vec<CompiledRule>> {
             return Err(format!("[{}] duplicate rule ID", rule.id));
         }
         let id = rule.id.clone();
-        compiled.push(rule.compile().map_err(|err| format!("[{id}] {err}"))?);
+        let mut rule = rule.compile().map_err(|err| format!("[{id}] {err}"))?;
+        rule.matcher_digest = matcher_digest(raw);
+        compiled.push(rule);
     }
     compiled.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(compiled)
@@ -277,6 +344,7 @@ impl Rule {
             id: self.id,
             remediation: self.remediation,
             matcher,
+            matcher_digest: String::new(),
             scope,
             exclude,
             fixtures,

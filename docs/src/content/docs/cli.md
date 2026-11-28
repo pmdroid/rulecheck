@@ -3,24 +3,25 @@ title: CLI reference
 description: Rulecheck commands, exit codes, and scan scope.
 ---
 
-The installed `rulecheck` command builds policy from `.rulecheck/rules/**/*.rule.ts` in the selected checkout and pipes it to the evaluator. `--root DIR` picks the checkout root, which defaults to the current directory. Run from the checkout root or pass `--root`: a subdirectory exits 2 and the message names the root to pass. `--commit SHA` reads rules and files from a full commit instead. `--untracked` adds untracked files that Git doesn't ignore to a working-tree check. `--all-matches` makes `check` report every text match instead of the first per rule and file; see [Every match](#every-match). `--text-budget MIB` sets how much scoped text one `check` reads; see [Scan budget](#scan-budget).
+The installed `rulecheck` command builds policy from `.rulecheck/rules/**/*.rule.ts` in the selected checkout and pipes it to the evaluator. `--root DIR` picks the checkout root, which defaults to the current directory. Run from the checkout root or pass `--root`: a subdirectory exits 2 and the message names the root to pass. `--commit SHA` reads rules and files from a full commit instead. `--untracked` adds untracked files that Git doesn't ignore to a working-tree check. `--all-matches` makes `check` report every text match instead of the first per rule and file; see [Every match](#every-match). `--text-budget MIB` sets how much scoped text one `check` reads; see [Scan budget](#scan-budget). `--baseline FILE` compares finding counts with a committed baseline; see [Baselines](../baselines/).
 
 | Command | Purpose |
 | --- | --- |
-| `rulecheck check [--root DIR] [--commit SHA \| --untracked] [--all-matches] [--text-budget MIB] [--format human\|json]` | Scan working-tree files tracked by Git (plus non-ignored untracked files with `--untracked`), or inspect exact committed blobs. |
+| `rulecheck check [--root DIR] [--commit SHA \| --untracked] [--all-matches] [--text-budget MIB] [--baseline FILE [--strict-baseline]] [--format human\|json]` | Scan working-tree files tracked by Git (plus non-ignored untracked files with `--untracked`), or inspect exact committed blobs. With `--baseline`, report only counts above the [baseline](../baselines/). |
+| `rulecheck baseline [--root DIR] [--commit SHA \| --untracked] [--text-budget MIB] [--baseline FILE [--write]]` | Record the all-match counts of a complete scan as a [baseline](../baselines/), to stdout or with `--write` to `FILE`. |
 | `rulecheck test [--root DIR] [--commit SHA]` | Run rule fixtures. |
 | `rulecheck list [--root DIR] [--commit SHA]` | List rule IDs in sorted order. |
 | `rulecheck validate [--root DIR] [--commit SHA]` | Check policy syntax, rule IDs, globs, and patterns. |
 | `rulecheck schema` | Print the v1 schema. |
 | `rulecheck help` | Print usage to stdout and exit 0. `-h` and `--help` do the same. |
 
-`list`, `test`, and `check` accept `--id-prefix PREFIX`. An unmatched prefix is an error. Use `git add` for newly created files before running a working-tree check, or pass `--untracked`. In commit mode a scoped symlink or submodule is an error; neither the working tree nor the index is consulted.
+`list`, `test`, `check` and `baseline` accept `--id-prefix PREFIX`. An unmatched prefix is an error. Use `git add` for newly created files before running a working-tree check, or pass `--untracked`. In commit mode a scoped symlink or submodule is an error; neither the working tree nor the index is consulted.
 
 | Exit | Meaning |
 | --- | --- |
 | 0 | Successful command; no violations or fixture mismatches. |
-| 1 | One or more findings or fixture mismatches. |
-| 2 | Could not judge, such as an invalid rule file, a builder failure, unreadable text, a file in a syntax rule's scope that doesn't parse, a text or syntax rule matching no files, a syntax rule selected with `--all-matches`, or a scan that stopped at its [text budget](#scan-budget) with partial findings. |
+| 1 | One or more findings or fixture mismatches. With `--baseline`, a rule and path above its allowance, or with `--strict-baseline` one below it or a stale rule entry. |
+| 2 | Could not judge, such as an invalid rule file, a builder failure, unreadable text, a file in a syntax rule's scope that doesn't parse, a text or syntax rule matching no files, a syntax rule selected with `--all-matches`, a scan that stopped at its [text budget](#scan-budget) with partial findings, or a baseline that is missing, invalid, not canonical, or recorded for other match semantics. `baseline` also exits 2 instead of recording an incomplete scan. |
 
 Findings and fixture mismatches go to stdout, one per line. Exit 2 diagnostics go to stderr. `validate` prints nothing on success, and `test` prints a count such as `4 fixtures passed`. Running `rulecheck` with no command prints the usage to stderr and exits 2, so a script that drops its command never reads as clean.
 
@@ -154,6 +155,7 @@ The contract:
 - When the scan stopped at the [text budget](#scan-budget), the result also has a `partial` object, and only then. `partial.reason` is `"text-budget"`. `textBudgetBytes` is the budget, `textBytesEvaluated` is the scoped text evaluated before the stop, `stoppedAt` is the file that didn't fit, and `unevaluatedRuleIds` lists, in policy order, the rules not evaluated on every file in scope. Each of those rules also has a diagnostic, and a final diagnostic with `ruleId: null` explains the stop. `findings` holds the findings from before the stop. The outcome is `error` and `exitCode` is 2, so a consumer that predates `partial` still treats the result as unjudged.
 - `policy.sha256` is the SHA-256 of the exact policy bytes the evaluator read. It is `null` when the policy could not be read. It differs from the shadow evidence's effective-policy digest, which hashes a canonical form. `policy.version` is `null` when the policy is invalid. `policy.ruleIds` lists the rules selected after `--id-prefix`.
 - `source.mode` is `commit` with the exact `--commit` SHA, or `working-tree` with `commit: null`. A working-tree scan includes unstaged edits, so no commit describes it exactly. `source.untracked` is `true` when `--untracked` was passed and absent otherwise, so results without the flag keep the shape shown above. `source.matches` is `"all"` when `--all-matches` was passed and absent otherwise. `source.textBudgetMiB` is the `--text-budget` value when it was passed and absent otherwise, which means 64.
+- With `--baseline`, `source.matches` is `"all"`, `source.baselineSha256` is the SHA-256 of the baseline bytes (`null` when they couldn't be read), and `source.strictBaseline` is `true` with `--strict-baseline`. A `baseline` object with `exceeded`, `loose`, `staleRuleIds` and `allowedFindings` is present when a complete scan was compared, and `findings` then lists only the findings of rules and paths in `exceeded`. All of these are absent without `--baseline`; see [Baselines](../baselines/#result-document).
 - `tools.evaluator` is the evaluator version. The installed `rulecheck` command sets `tools.builder`. The low-level evaluator reports `null` because it reads policy from stdin.
 - If the builder fails, the installed command still writes an error result. It carries the builder's messages as diagnostics and `null` policy fields. Invalid arguments, including a short `--commit` value, `--untracked` with `--commit`, or a `--root` that is not the checkout root, produce no document, only a usage message and exit 2. Treat a missing or unparsable document as `error`.
 
@@ -169,6 +171,7 @@ Every limit fails closed with exit 2 and a message naming the limit:
 | Scoped text in one scan | 64 MiB by default; `--text-budget` sets 1 to 1024 MiB. Reaching it stops with partial findings. |
 | Git index or tree listing | 8 MiB |
 | Findings | 10,000 |
+| Baseline file | 4 MiB, and 1 to 10,000 per rule and path |
 | Builder run, and evaluator run under the installed command | 120 s each |
 
 ## Reproducibility

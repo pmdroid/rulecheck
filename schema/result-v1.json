@@ -38,8 +38,10 @@
         "mode": { "enum": ["working-tree", "commit"] },
         "commit": { "type": ["string", "null"], "pattern": "^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$" },
         "untracked": { "const": true, "description": "Present only when --untracked added non-ignored untracked files to a working-tree check." },
-        "matches": { "const": "all", "description": "Present only when --all-matches reported every text match. Absent means each rule reports at most its first match per file." },
-        "textBudgetMiB": { "type": "integer", "minimum": 1, "maximum": 1024, "description": "Present only when --text-budget set the scoped-text budget. Absent means the default of 64 MiB." }
+        "matches": { "const": "all", "description": "Present only when --all-matches or --baseline reported every text match. Absent means each rule reports at most its first match per file." },
+        "textBudgetMiB": { "type": "integer", "minimum": 1, "maximum": 1024, "description": "Present only when --text-budget set the scoped-text budget. Absent means the default of 64 MiB." },
+        "baselineSha256": { "type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$", "description": "Present only when --baseline was passed: the SHA-256 of the exact baseline bytes read, or null when the file could not be read." },
+        "strictBaseline": { "const": true, "description": "Present only when --strict-baseline also failed counts below the baseline." }
       }
     },
     "findings": {
@@ -51,9 +53,35 @@
       "type": "array",
       "items": { "$ref": "#/$defs/diagnostic" }
     },
-    "partial": { "$ref": "#/$defs/partial" }
+    "partial": { "$ref": "#/$defs/partial" },
+    "baseline": { "$ref": "#/$defs/baseline" }
   },
   "$defs": {
+    "baseline": {
+      "description": "Present only when a complete scan was compared with --baseline. findings then lists only the findings of a rule and path in exceeded: a count-only baseline cannot tell which of them is new, so every match there is listed. Findings within their allowance are counted in allowedFindings and not listed. loose and staleRuleIds fail the check only when strict is true.",
+      "type": "object",
+      "required": ["strict", "allowedFindings", "exceeded", "loose", "staleRuleIds"],
+      "additionalProperties": false,
+      "properties": {
+        "strict": { "type": "boolean" },
+        "allowedFindings": { "type": "integer", "minimum": 0 },
+        "exceeded": { "type": "array", "items": { "$ref": "#/$defs/baselineCount" } },
+        "loose": { "type": "array", "items": { "$ref": "#/$defs/baselineCount" } },
+        "staleRuleIds": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "baselineCount": {
+      "description": "A rule and path whose finding count differs from its baseline allowance. allowed is 0 for a path the baseline does not list; count is 0 for a listed path with no findings, such as a deleted, renamed or cleaned file.",
+      "type": "object",
+      "required": ["ruleId", "path", "count", "allowed"],
+      "additionalProperties": false,
+      "properties": {
+        "ruleId": { "type": "string" },
+        "path": { "type": "string", "minLength": 1 },
+        "count": { "type": "integer", "minimum": 0 },
+        "allowed": { "type": "integer", "minimum": 0 }
+      }
+    },
     "partial": {
       "description": "Present only when the scan stopped at the text budget. The outcome is then error with exit code 2. findings holds the deterministic findings from the files before stoppedAt and is not a complete result: never treat a rule as passing or update a baseline from it. Rules in unevaluatedRuleIds also have a diagnostic; the other selected rules were evaluated on every file in scope.",
       "type": "object",

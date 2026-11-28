@@ -52,7 +52,10 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
     fs::write(path.join("package.json"), MANIFEST)?;
     symlink(evaluator, path.join("target/release/rulecheck-evaluator"))?;
 
-    if matches!(first, Some("check" | "list" | "test" | "validate")) {
+    if matches!(
+        first,
+        Some("check" | "baseline" | "list" | "test" | "validate")
+    ) {
         let modules = compiler_modules()?;
         symlink(modules, path.join("node_modules"))?;
     }

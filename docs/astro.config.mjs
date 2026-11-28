@@ -15,6 +15,7 @@ export default defineConfig({
         { label: "Authoring rules", slug: "authoring" },
         { label: "Rule cookbook", slug: "cookbook" },
         { label: "CLI reference", slug: "cli" },
+        { label: "Baselines", slug: "baselines" },
         { label: "CI and Paws", slug: "ci" },
       ],
     }),
