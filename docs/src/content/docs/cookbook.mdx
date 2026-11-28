@@ -25,12 +25,14 @@ import structuredYaml from '../../../examples/rules/structured-yaml.rule.ts?raw'
 import structuredYamlValue from '../../../examples/rules/structured-yaml-value.rule.ts?raw';
 import allMatches from '../../../examples/rules/all-matches.rule.ts?raw';
 import requires from '../../../examples/rules/requires.rule.ts?raw';
+import consistencySameValues from '../../../examples/rules/consistency-same-values.rule.ts?raw';
+import consistencyPathExists from '../../../examples/rules/consistency-path-exists.rule.ts?raw';
 import regexBackreference from '../../../examples/rules/regex-backreference.rule.ts?raw';
 import regexLookahead from '../../../examples/rules/regex-lookahead.rule.ts?raw';
 import regexLookbehind from '../../../examples/rules/regex-lookbehind.rule.ts?raw';
 import message from '../../../examples/rules/message.rule.ts?raw';
 
-Rulecheck supports five matcher forms: **literal text**, **regex text**, **forbidden path**, **syntax** and **structured YAML**. The first three recipes show the text and path forms, the middle recipes show how to control where a rule applies, the [syntax recipes](#comments-in-function-bodies) select TypeScript, TSX, Rust, Go and Python syntax nodes, and the [structured recipes](#a-key-every-entry-must-declare) check keys and values in YAML files. The code below comes from the same TypeScript files that CI runs. Copy a recipe into `.rulecheck/rules/` and adapt its ID, paths, and fixtures.
+Rulecheck supports six matcher forms: **literal text**, **regex text**, **forbidden path**, **syntax**, **structured YAML** and cross-file **consistency**. The first three recipes show the text and path forms, the middle recipes show how to control where a rule applies and how to [keep two files in step](#keep-two-files-in-step), the [syntax recipes](#comments-in-function-bodies) select TypeScript, TSX, Rust, Go and Python syntax nodes, and the [structured recipes](#a-key-every-entry-must-declare) check keys and values in YAML files. The code below comes from the same TypeScript files that CI runs. Copy a recipe into `.rulecheck/rules/` and adapt its ID, paths, and fixtures.
 
 From your project's Git checkout root, run the installed CLI after copying and adapting a rule:
 
@@ -208,6 +210,42 @@ config/app.toml:3:1: [config/no-legacy-settings] legacy_port is set to 8080. Rem
 ```
 
 In `--format json` each finding has the rendered text in `message` and the fixed text in `remediation`.
+
+## Keep two files in step
+
+A `consistency` rule relates files instead of judging each one alone. Its `paths`, `exclude` and `excludeSets` select an inventory, and each named scope inside it extracts values with a regex that has one capture group. The `same-values` form reports every value that one scope has and the other lacks. Here every flag documented in `docs/flags.md` must be a key in `config/flags/*.json`, and the other way round.
+
+<Code code={consistencySameValues} lang="ts" title="consistency-same-values.rule.ts" />
+
+A consistency fixture lists a small inventory in `files` and every finding in `expectFindings`, ordered by path and location. The runner checks a clean checkout, then adds an undocumented `dark_mode` key to `config/flags/a.json`. The working tree and the exact commit then both report it where it is configured, with a detail that names both scopes:
+
+```text
+config/flags/a.json:1:25: [docs/flags-match-config] "dark_mode" is in configured but not in documented. Document every configured flag in docs/flags.md and remove entries for flags that are gone.
+```
+
+Each captured value is trimmed of surrounding whitespace. An empty value is dropped, and a value repeated across files counts once, so it's reported once, at its first occurrence by path and position. Values are compared byte for byte: case, Unicode normalization and quoting aren't changed, so write the regex to capture exactly the text that should match.
+
+## Check that listed files exist
+
+The `path-exists` form reads references from one scope and reports each one that doesn't name a regular file of the rule's inventory. With `base: "file"` a reference is relative to the directory of the file it's in, and with `base: "root"` it's relative to the repository root.
+
+<Code code={consistencyPathExists} lang="ts" title="consistency-path-exists.rule.ts" />
+
+The runner checks a clean checkout, then lists a file that doesn't exist. Both check modes report:
+
+```text
+assets/manifest.txt:2:7: [assets/manifest-files-exist] "icons/gone.svg" resolves to assets/icons/gone.svg, which is not in the selected inventory. Add the missing asset or remove its line from assets/manifest.txt.
+```
+
+A reference is resolved as text and never opened: `.` segments are dropped and `..` steps up one directory. A reference that is absolute, contains a backslash, a control character, an empty segment or `.git`, or climbs above the repository root is reported as escaping the repository instead of being looked up. A file outside the rule's `paths`, a deleted file and a symlink are never in the inventory.
+
+Both forms are bounded and judge the same inventory in a working tree and in an exact commit:
+
+- A scope that matches no file can't be judged, so the check exits 2. A scope whose files hold no values is judged and has an empty set.
+- A symlink or submodule in the rule's scope exits 2 in both modes. Exclude it, or narrow `paths`.
+- Each scope extracts at most 10,000 values of at most 1,024 bytes. More exits 2. In a finding's message each value is escaped and cut to 64 characters, like a [message template](../authoring/#per-finding-messages) capture.
+- After a [text budget](../cli/) stop the rule reports nothing and is listed as not evaluated, since a later file could change its result.
+- `skipIfContent` and `anchors` don't apply. Consistency rules don't join more than two scopes, don't compare snippets, and run no repository code.
 
 ## Comments in function bodies
 

@@ -241,10 +241,10 @@ function checkShape(rule, fail, setNames) {
 
   if (!isObject(rule)) fail(undefined, undefined, "The rule must be an object", "Pass an object literal to defineRule.");
   fields(rule, "the rule", ["id", "kind", "paths", "exclude", "excludeSets", "skipIfContent", "anchors", "remediation", "message", "pattern",
-    "requires", "selector", "structure", "provenance", "fixtures"], ["id", "kind", "paths", "remediation", "fixtures"]);
+    "requires", "selector", "structure", "consistency", "provenance", "fixtures"], ["id", "kind", "paths", "remediation", "fixtures"]);
   expect(rule, "id", "rule", (value) => typeof value === "string", "a string");
-  expect(rule, "kind", "rule", (value) => ["text", "forbidden-path", "syntax", "structured"].includes(value),
-    '"text", "forbidden-path", "syntax" or "structured"');
+  expect(rule, "kind", "rule", (value) => ["text", "forbidden-path", "syntax", "structured", "consistency"].includes(value),
+    '"text", "forbidden-path", "syntax", "structured" or "consistency"');
   expect(rule, "paths", "rule", isStrings, "an array of glob strings");
   expect(rule, "exclude", "rule", isStrings, "an array of glob strings");
   expect(rule, "anchors", "rule", isStrings, "an array of glob strings");
@@ -264,6 +264,9 @@ function checkShape(rule, fail, setNames) {
       fail(rule, "skipIfContent", "Forbidden-path rules have no skipIfContent, because they never read content",
         "Remove skipIfContent.");
     }
+    if (rule.kind === "consistency") {
+      fail(rule, "skipIfContent", "Consistency rules have no skipIfContent", "Narrow the scopes with exclude.");
+    }
     expect(rule, "skipIfContent", "rule", isObject, "an object { kind, value, firstBytes }");
     fields(rule.skipIfContent, "the skipIfContent", ["kind", "value", "firstBytes"], ["kind", "value", "firstBytes"]);
     expect(rule.skipIfContent, "kind", "skipIfContent", (value) => ["literal", "regex"].includes(value), '"literal" or "regex"');
@@ -282,11 +285,40 @@ function checkShape(rule, fail, setNames) {
   const syntax = rule.kind === "syntax";
   const structured = rule.kind === "structured";
   const text = rule.kind === "text" || syntax || structured;
+  const consistency = rule.kind === "consistency";
+  if (consistency !== Object.hasOwn(rule, "consistency")) {
+    if (consistency) {
+      fail(rule, undefined, "Consistency rules require a consistency block",
+        'Add consistency: { form: "same-values", left: {...}, right: {...} }.');
+    }
+    fail(rule, "consistency", "Only consistency rules have a consistency block", 'Remove it or use kind: "consistency".');
+  }
+  if (consistency) {
+    expect(rule, "consistency", "rule", isObject, "an object { form, ... }");
+    const block = rule.consistency;
+    expect(block, "form", "consistency", (value) => ["same-values", "path-exists"].includes(value),
+      '"same-values" or "path-exists"');
+    const pathExists = block.form === "path-exists";
+    const scopes = pathExists ? ["source"] : ["left", "right"];
+    fields(block, "the consistency block", ["form", ...scopes, ...(pathExists ? ["base"] : [])],
+      ["form", ...scopes, ...(pathExists ? ["base"] : [])]);
+    if (pathExists) expect(block, "base", "consistency", (value) => ["root", "file"].includes(value), '"root" or "file"');
+    for (const key of scopes) {
+      expect(block, key, "consistency", isObject, "an object { name, paths, extract }");
+      const scope = block[key];
+      const label = `consistency ${key}`;
+      fields(scope, `the ${label} scope`, ["name", "paths", "exclude", "extract"], ["name", "paths", "extract"]);
+      expect(scope, "name", label, (value) => typeof value === "string", "a string");
+      expect(scope, "paths", label, isStrings, "an array of glob strings");
+      expect(scope, "exclude", label, isStrings, "an array of glob strings");
+      expect(scope, "extract", label, (value) => typeof value === "string", "a regex string");
+    }
+  }
   if (rule.kind === "text" && !Object.hasOwn(rule, "pattern")) {
     fail(rule, undefined, "Text rules require a pattern", 'Add pattern: { kind: "literal", value: "..." }.');
   }
   if (rule.kind !== "text" && Object.hasOwn(rule, "pattern")) {
-    fail(rule, "pattern", `${syntax ? "Syntax" : structured ? "Structured" : "Forbidden-path"} rules have no pattern`,
+    fail(rule, "pattern", `${syntax ? "Syntax" : structured ? "Structured" : consistency ? "Consistency" : "Forbidden-path"} rules have no pattern`,
       syntax ? "Use selector instead of pattern." : structured ? "Use structure instead of pattern." : "Remove pattern.");
   }
   if (structured && !Object.hasOwn(rule, "structure")) {
@@ -323,7 +355,7 @@ function checkShape(rule, fail, setNames) {
     expect(assert, "key", "structure assert", (value) => typeof value === "string", "a string");
   }
   if (rule.kind !== "text" && Object.hasOwn(rule, "requires")) {
-    fail(rule, "requires", `${syntax ? "Syntax" : structured ? "Structured" : "Forbidden-path"} rules have no requires`,
+    fail(rule, "requires", `${syntax ? "Syntax" : structured ? "Structured" : consistency ? "Consistency" : "Forbidden-path"} rules have no requires`,
       'Remove requires or use kind: "text".');
   }
   if (syntax && !Object.hasOwn(rule, "selector")) {
@@ -376,6 +408,27 @@ function checkShape(rule, fail, setNames) {
   for (const [index, fixture] of rule.fixtures.entries()) {
     const label = `fixture ${index + 1}`;
     if (!isObject(fixture)) fail(rule.fixtures, index, `${label} must be an object`, "Write { path, content, expect }.");
+    if (consistency) {
+      fields(fixture, label, ["files", "expectFindings"], ["files", "expectFindings"]);
+      expect(fixture, "files", label, (value) => Array.isArray(value), "an array of { path, content }");
+      for (const [position, file] of fixture.files.entries()) {
+        const where = `${label} file ${position + 1}`;
+        if (!isObject(file)) fail(fixture.files, position, `${where} must be an object`, "Write { path, content }.");
+        fields(file, where, ["path", "content"], ["path"]);
+        expect(file, "path", where, (value) => typeof value === "string", "a string");
+        expect(file, "content", where, (value) => typeof value === "string", "a string");
+      }
+      expect(fixture, "expectFindings", label, (value) => Array.isArray(value), "an array of { path, line, column }");
+      for (const [position, value] of fixture.expectFindings.entries()) {
+        const where = `${label} expectFindings ${position + 1}`;
+        if (!isObject(value)) fail(fixture.expectFindings, position, `${where} must be an object`, "Write { path, line, column }.");
+        fields(value, where, ["path", "line", "column"], ["path", "line", "column"]);
+        expect(value, "path", where, (item) => typeof item === "string", "a string");
+        expect(value, "line", where, isCount, "a one-based integer");
+        expect(value, "column", where, isCount, "a one-based integer");
+      }
+      continue;
+    }
     const all = Object.hasOwn(fixture, "expectAll");
     fields(fixture, label, ["path", "content", "expect", "expectAll"],
       [...(text ? ["path", "content"] : ["path"]), ...(all ? [] : ["expect"])]);

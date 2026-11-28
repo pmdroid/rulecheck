@@ -107,6 +107,18 @@ const recipes = {
     ".github/workflows/release.yml": "on: push\npermissions:\n  contents: read\njobs:\n  publish:\n    permissions:\n      contents: write\n",
   }, { ".github/workflows/release.yml": "on: push\npermissions:\n  contents: write\n" },
   ".github/workflows/release.yml:3:13: [ci/no-contents-write] Grant contents: write only to the job that needs it, or use read."),
+  "consistency-same-values": recipe({
+    "docs/flags.md": "# Flags\n\n- `beta_search`: new search.\n",
+    "config/flags/a.json": "{ \"beta_search\": true }\n",
+  }, { "config/flags/a.json": "{ \"beta_search\": true, \"dark_mode\": false }\n" },
+  "config/flags/a.json:1:25: [docs/flags-match-config] \"dark_mode\" is in configured but not in documented. "
+    + "Document every configured flag in docs/flags.md and remove entries for flags that are gone."),
+  "consistency-path-exists": recipe({
+    "assets/manifest.txt": "file: icons/logo.svg\n",
+    "assets/icons/logo.svg": "<svg/>\n",
+  }, { "assets/manifest.txt": "file: icons/logo.svg\nfile: icons/gone.svg\n" },
+  "assets/manifest.txt:2:7: [assets/manifest-files-exist] \"icons/gone.svg\" resolves to assets/icons/gone.svg, "
+    + "which is not in the selected inventory. Add the missing asset or remove its line from assets/manifest.txt."),
 };
 
 function run(bin, args, { cwd, input, status = 0 } = {}) {
@@ -191,6 +203,12 @@ for (const [name, { clean, bad, finding, args: flags }] of Object.entries(recipe
         assert.equal(moved.stdout, "");
         assert.equal(moved.stderr, missing);
       }
+    }
+    if (name.startsWith("consistency-")) {
+      // The exact commit judges the same inventory the same way.
+      git("-c", "user.name=Rulecheck", "-c", "user.email=rulecheck@example.invalid",
+        "-c", "commit.gpgsign=false", "commit", "-qm", "Break consistency");
+      scan({ expected: finding, sha: git("rev-parse", "HEAD") });
     }
     if (name === "requires") {
       // The exact commit judges the same bytes the same way, and restoring the

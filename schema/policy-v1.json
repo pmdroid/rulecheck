@@ -27,7 +27,7 @@
       "additionalProperties": false,
       "properties": {
         "id": { "type": "string", "maxLength": 128, "pattern": "^[a-z0-9-]+(/[a-z0-9-]+)*$" },
-        "kind": { "enum": ["text", "forbidden-path", "syntax", "structured"] },
+        "kind": { "enum": ["text", "forbidden-path", "syntax", "structured", "consistency"] },
         "paths": {
           "type": "array",
           "minItems": 1,
@@ -93,6 +93,7 @@
         },
         "selector": { "$ref": "#/$defs/selector" },
         "structure": { "$ref": "#/$defs/structure" },
+        "consistency": { "$ref": "#/$defs/consistency" },
         "provenance": {
           "type": "object",
           "required": ["finding"],
@@ -118,8 +119,9 @@
         "properties": {
           "selector": { "not": {} },
           "structure": { "not": {} },
+          "consistency": { "not": {} },
           "anchors": { "not": {} },
-          "fixtures": { "items": { "required": ["content"] } }
+          "fixtures": { "items": { "required": ["content"], "properties": { "files": { "not": {} } } } }
         }
       },
       "else": {
@@ -132,7 +134,8 @@
             "anchors": { "not": {} },
             "requires": { "not": {} },
             "message": { "not": {} },
-            "fixtures": { "items": { "required": ["content"] } }
+            "consistency": { "not": {} },
+            "fixtures": { "items": { "required": ["content"], "properties": { "files": { "not": {} } } } }
           }
         },
         "else": {
@@ -145,19 +148,42 @@
               "anchors": { "not": {} },
               "requires": { "not": {} },
               "message": { "not": {} },
-              "fixtures": { "items": { "required": ["content"], "properties": { "expectAll": { "not": {} } } } }
+              "consistency": { "not": {} },
+              "fixtures": {
+                "items": { "required": ["content"], "properties": { "expectAll": { "not": {} }, "files": { "not": {} } } }
+              }
             }
           },
           "else": {
-            "properties": {
-              "pattern": { "not": {} },
-              "selector": { "not": {} },
-              "structure": { "not": {} },
-              "requires": { "not": {} },
-              "skipIfContent": { "not": {} },
-              "message": { "not": {} },
-              "fixtures": {
-                "items": { "not": { "required": ["content"] }, "properties": { "expectAll": { "not": {} } } }
+            "if": { "properties": { "kind": { "const": "forbidden-path" } } },
+            "then": {
+              "properties": {
+                "pattern": { "not": {} },
+                "selector": { "not": {} },
+                "structure": { "not": {} },
+                "requires": { "not": {} },
+                "skipIfContent": { "not": {} },
+                "message": { "not": {} },
+                "consistency": { "not": {} },
+                "fixtures": {
+                  "items": {
+                    "not": { "required": ["content"] },
+                    "properties": { "expectAll": { "not": {} }, "files": { "not": {} } }
+                  }
+                }
+              }
+            },
+            "else": {
+              "required": ["consistency"],
+              "properties": {
+                "pattern": { "not": {} },
+                "selector": { "not": {} },
+                "structure": { "not": {} },
+                "requires": { "not": {} },
+                "anchors": { "not": {} },
+                "skipIfContent": { "not": {} },
+                "message": { "not": {} },
+                "fixtures": { "items": { "required": ["files", "expectFindings"] } }
               }
             }
           }
@@ -275,12 +301,66 @@
       },
       "oneOf": [{ "required": ["key"] }, { "required": ["index"] }, { "required": ["each"] }]
     },
-    "fixture": {
-      "description": "Asserts the first match with expect (null for none), or, for text rules, every match in --all-matches order with expectAll. Use exactly one.",
+    "consistency": {
+      "description": "Consistency rules only. Each scope selects files inside the rule's paths, exclude and excludeSets, and extract captures one value per match. A value is trimmed of surrounding whitespace, an empty value is dropped and a repeated value counts once. A scope extracts at most 10000 values of at most 1024 bytes. same-values reports each value found in one scope but not the other, at its first occurrence. path-exists reports each reference that does not resolve to a regular file of the rule's inventory; a reference resolves lexically from the repository root or from the referencing file's directory, and one that is absolute, contains a backslash, control character, empty segment or .git, or climbs above the root is reported as escaping the repository. A scope with no file, or a symlink or submodule in the rule's scope, exits 2.",
       "type": "object",
-      "required": ["path"],
+      "required": ["form"],
+      "oneOf": [
+        {
+          "required": ["left", "right"],
+          "additionalProperties": false,
+          "properties": {
+            "form": { "const": "same-values" },
+            "left": { "$ref": "#/$defs/consistencyScope" },
+            "right": { "$ref": "#/$defs/consistencyScope" }
+          }
+        },
+        {
+          "required": ["source", "base"],
+          "additionalProperties": false,
+          "properties": {
+            "form": { "const": "path-exists" },
+            "source": { "$ref": "#/$defs/consistencyScope" },
+            "base": { "enum": ["root", "file"] }
+          }
+        }
+      ]
+    },
+    "consistencyScope": {
+      "type": "object",
+      "required": ["name", "paths", "extract"],
       "additionalProperties": false,
-      "oneOf": [{ "required": ["expect"] }, { "required": ["expectAll"] }],
+      "properties": {
+        "name": { "$ref": "#/$defs/setName" },
+        "paths": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+        },
+        "exclude": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+        },
+        "extract": {
+          "description": "A Rust regex with exactly one capture group, around the value. Use (?m) for ^ and $ at line boundaries.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
+      }
+    },
+    "fixture": {
+      "description": "Asserts the first match with expect (null for none), or, for text rules, every match in --all-matches order with expectAll. Use exactly one. A consistency fixture instead lists a synthetic inventory in files and every finding the rule reports on it in expectFindings.",
+      "type": "object",
+      "additionalProperties": false,
+      "oneOf": [
+        { "required": ["path", "expect"] },
+        { "required": ["path", "expectAll"] },
+        { "required": ["files", "expectFindings"] }
+      ],
       "properties": {
         "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
         "content": { "type": "string" },
@@ -294,6 +374,35 @@
           "description": "Every match location in ascending order, without duplicates. An empty list expects no match.",
           "type": "array",
           "items": { "$ref": "#/$defs/location" }
+        },
+        "files": {
+          "description": "Consistency fixtures only: the inventory's files. A file in a scope that extracts values needs content.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "required": ["path"],
+            "additionalProperties": false,
+            "properties": {
+              "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+              "content": { "type": "string" }
+            }
+          }
+        },
+        "expectFindings": {
+          "description": "Consistency fixtures only: every finding, ordered by path, then line and column, without duplicates. An empty list expects none.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "line", "column"],
+            "additionalProperties": false,
+            "properties": {
+              "path": { "type": "string", "minLength": 1 },
+              "line": { "type": "integer", "minimum": 1 },
+              "column": { "type": "integer", "minimum": 1 }
+            }
+          }
         }
       }
     },

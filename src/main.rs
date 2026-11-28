@@ -1,4 +1,5 @@
 mod baseline;
+mod consistency;
 mod dialect;
 mod message;
 mod policy;
@@ -251,6 +252,16 @@ fn select<'a>(rules: &'a [CompiledRule], prefix: Option<&str>) -> Result<Vec<&'a
 
 const EMPTY_SCOPE: &str = "empty text scope: track a matching file or update the rule's path globs";
 const EMPTY_SCOPES: &str = "one or more text rules matched no repository files";
+const EMPTY_CONSISTENCY: &str =
+    "one or more consistency rules have a scope that matched no repository files";
+
+/// A consistency scope that matched no file of its rule's inventory.
+fn empty_consistency_scope(scope: &str) -> String {
+    format!(
+        "empty consistency scope {scope:?}: no file of the rule's inventory matches it; track a \
+         matching file or update the scope's path globs"
+    )
+}
 const MISSING_ANCHOR: &str = "missing anchor: no file matches the rule's anchors, so the area it \
 guards moved or vanished and an absent forbidden path proves nothing; restore the anchor or \
 update anchors and paths together";
@@ -281,6 +292,9 @@ fn cannot_judge(report: &Report) -> Vec<String> {
     let mut reasons = Vec::new();
     if !report.empty_scopes.is_empty() {
         reasons.push(EMPTY_SCOPES.to_owned());
+    }
+    if !report.empty_consistency.is_empty() {
+        reasons.push(EMPTY_CONSISTENCY.to_owned());
     }
     if !report.missing_anchors.is_empty() {
         reasons.push(MISSING_ANCHORS.to_owned());
@@ -420,6 +434,9 @@ fn check(options: &Options) -> Result<u8> {
         for id in &report.empty_scopes {
             eprintln!("[{id}] {EMPTY_SCOPE}");
         }
+        for (id, scope) in &report.empty_consistency {
+            eprintln!("[{id}] {}", empty_consistency_scope(scope));
+        }
         for id in &report.missing_anchors {
             eprintln!("[{id}] {MISSING_ANCHOR}");
         }
@@ -476,6 +493,11 @@ fn check(options: &Options) -> Result<u8> {
             for id in &report.empty_scopes {
                 eprintln!("[{id}] {EMPTY_SCOPE}");
                 diagnostics.push(json!({ "ruleId": id, "message": EMPTY_SCOPE }));
+            }
+            for (id, scope) in &report.empty_consistency {
+                let message = empty_consistency_scope(scope);
+                eprintln!("[{id}] {message}");
+                diagnostics.push(json!({ "ruleId": id, "message": message }));
             }
             for id in &report.missing_anchors {
                 eprintln!("[{id}] {MISSING_ANCHOR}");
@@ -590,6 +612,9 @@ fn regenerate(options: &Options) -> Result<u8> {
     for id in &report.empty_scopes {
         eprintln!("[{id}] {EMPTY_SCOPE}");
     }
+    for (id, scope) in &report.empty_consistency {
+        eprintln!("[{id}] {}", empty_consistency_scope(scope));
+    }
     for id in &report.missing_anchors {
         eprintln!("[{id}] {MISSING_ANCHOR}");
     }
@@ -679,6 +704,34 @@ fn test(rules: &[&CompiledRule]) -> bool {
             let content = fixture.content.as_deref();
             let applies = rule.applies_to(&fixture.path) && !rule.skips(content);
             let mismatch = match &fixture.expect {
+                Expect::Findings(expected) => match consistency_fixture(rule, &fixture.files) {
+                    Ok(actual) if actual == *expected => Ok(None),
+                    Ok(actual) => {
+                        let (path, at) = actual
+                            .iter()
+                            .zip(expected)
+                            .find(|(found, wanted)| found != wanted)
+                            .map(|(found, _)| found)
+                            .or_else(|| actual.get(expected.len()))
+                            .or_else(|| expected.get(actual.len()))
+                            .expect("the lists differ");
+                        failures.push((
+                            path.clone(),
+                            &rule.id,
+                            index,
+                            *at,
+                            describe_findings(expected),
+                            describe_findings(&actual),
+                            &rule.remediation,
+                            None,
+                        ));
+                        continue;
+                    }
+                    Err(error) => {
+                        errors.push((fixture.path.clone(), &rule.id, index, error));
+                        continue;
+                    }
+                },
                 Expect::First(expected) => {
                     let actual = match applies {
                         true => rule.matcher.location(&fixture.path, content),
@@ -719,7 +772,7 @@ fn test(rules: &[&CompiledRule]) -> bool {
                 Ok(None) => {}
                 Ok(Some((at, expected, actual))) => {
                     failures.push((
-                        &fixture.path,
+                        fixture.path.clone(),
                         &rule.id,
                         index,
                         at,
@@ -729,7 +782,7 @@ fn test(rules: &[&CompiledRule]) -> bool {
                         rule.dialect_note.as_deref(),
                     ));
                 }
-                Err(error) => errors.push((&fixture.path, &rule.id, index, error)),
+                Err(error) => errors.push((fixture.path.clone(), &rule.id, index, error)),
             }
         }
     }
@@ -766,6 +819,7 @@ fn fixture_coverage(rules: &[&CompiledRule]) -> bool {
             !rule.fixtures.iter().any(|fixture| match &fixture.expect {
                 Expect::First(expected) => expected.is_some(),
                 Expect::All(expected) => !expected.is_empty(),
+                Expect::Findings(expected) => !expected.is_empty(),
             })
         })
         .collect();
@@ -786,6 +840,51 @@ fn fixture_coverage(rules: &[&CompiledRule]) -> bool {
         println!("every selected rule has a positive fixture");
     }
     uncovered.is_empty()
+}
+
+/// Runs a consistency rule over a fixture's inventory, with the same scope
+/// checks as a scan, and returns its findings in output order.
+fn consistency_fixture(
+    rule: &CompiledRule,
+    files: &[(String, Option<String>)],
+) -> Result<Vec<(String, Location)>> {
+    let policy::Matcher::Consistency(consistency) = &rule.matcher else {
+        unreachable!("only consistency rules have file-list fixtures");
+    };
+    let mut accumulator = consistency::Accumulator::new(consistency);
+    for (path, content) in files {
+        if rule.applies_to(path) {
+            accumulator.add(path, content.as_deref().filter(|_| rule.reads(path)))?;
+        }
+    }
+    if let Some(name) = accumulator.empty_scopes().first() {
+        return Err(format!(
+            "scope {name:?} matches no file in the fixture, so the rule cannot be judged"
+        ));
+    }
+    let mut found: Vec<_> = accumulator
+        .finish()
+        .into_iter()
+        .map(|hit| (hit.path, hit.location))
+        .collect();
+    found.sort_unstable();
+    Ok(found)
+}
+
+fn describe_findings(findings: &[(String, Location)]) -> String {
+    if findings.is_empty() {
+        return "no violations".into();
+    }
+    let shown: Vec<_> = findings
+        .iter()
+        .take(16)
+        .map(|(path, Location { line, column })| format!("{path}:{line}:{column}"))
+        .collect();
+    let more = match findings.len() {
+        n if n > 16 => format!(" and {} more", n - 16),
+        _ => String::new(),
+    };
+    format!("violations at {}{more}", shown.join(", "))
 }
 
 fn describe(location: Option<Location>) -> String {

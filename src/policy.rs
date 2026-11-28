@@ -1,3 +1,4 @@
+use crate::consistency::{self, Consistency};
 use crate::dialect;
 use crate::message::Template;
 use crate::structured::{Structure, StructuredMatcher};
@@ -85,6 +86,8 @@ struct Rule {
     #[serde(default, deserialize_with = "present")]
     structure: Option<Structure>,
     #[serde(default, deserialize_with = "present")]
+    consistency: Option<consistency::Source>,
+    #[serde(default, deserialize_with = "present")]
     provenance: Option<Provenance>,
     fixtures: Vec<FixtureSource>,
 }
@@ -122,6 +125,7 @@ enum Kind {
     ForbiddenPath,
     Syntax,
     Structured,
+    Consistency,
 }
 
 #[derive(Deserialize)]
@@ -134,18 +138,42 @@ enum Pattern {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FixtureSource {
-    path: String,
+    #[serde(default, deserialize_with = "present")]
+    path: Option<String>,
     #[serde(default, deserialize_with = "present")]
     content: Option<String>,
     #[serde(default, deserialize_with = "present")]
     expect: Option<Option<Location>>,
     #[serde(default, rename = "expectAll", deserialize_with = "present")]
     expect_all: Option<Vec<Location>>,
+    #[serde(default, deserialize_with = "present")]
+    files: Option<Vec<FixtureFile>>,
+    #[serde(default, rename = "expectFindings", deserialize_with = "present")]
+    expect_findings: Option<Vec<FindingLocation>>,
+}
+
+/// One file of a consistency fixture's synthetic inventory.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FixtureFile {
+    path: String,
+    #[serde(default, deserialize_with = "present")]
+    content: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FindingLocation {
+    path: String,
+    line: usize,
+    column: usize,
 }
 
 pub struct Fixture {
     pub path: String,
     pub content: Option<String>,
+    /// Consistency fixtures only: the inventory, sorted by path.
+    pub files: Vec<(String, Option<String>)>,
     pub expect: Expect,
 }
 
@@ -154,6 +182,8 @@ pub struct Fixture {
 pub enum Expect {
     First(Option<Location>),
     All(Vec<Location>),
+    /// Consistency fixtures: every finding as (path, location), sorted.
+    Findings(Vec<(String, Location)>),
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
@@ -210,6 +240,8 @@ pub enum Matcher {
         requirement: Box<Matcher>,
     },
     Structured(StructuredMatcher),
+    /// A cross-file rule, judged once over its whole selected inventory.
+    Consistency(Box<Consistency>),
 }
 
 pub(crate) fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
@@ -249,7 +281,14 @@ pub fn valid_rule_id(id: &str) -> bool {
 fn matcher_digest(rule: &Value) -> String {
     let mut semantics = serde_json::Map::new();
     semantics.insert("counting".into(), Value::from(1));
-    for key in ["kind", "pattern", "requires", "selector", "structure"] {
+    for key in [
+        "kind",
+        "pattern",
+        "requires",
+        "selector",
+        "structure",
+        "consistency",
+    ] {
         if let Some(value) = rule.get(key) {
             semantics.insert(key.into(), value.clone());
         }
@@ -409,6 +448,13 @@ impl Rule {
         let exclude = globs("exclude", &excluded)?;
         let anchors = match (&self.anchors, self.kind) {
             (None, _) => None,
+            (Some(_), Kind::Consistency) => {
+                return Err(
+                    "anchors apply to forbidden-path rules only; a consistency rule already \
+                     exits 2 when one of its scopes matches no file"
+                        .into(),
+                );
+            }
             (Some(_), Kind::Text | Kind::Syntax | Kind::Structured) => {
                 return Err(
                     "anchors apply to forbidden-path rules only; text and syntax rules \
@@ -430,8 +476,28 @@ impl Rule {
                     .into(),
             );
         }
+        if self.consistency.is_some() != matches!(self.kind, Kind::Consistency) {
+            return Err(
+                "consistency rules require a consistency block, and only they take one".into(),
+            );
+        }
+        if matches!(self.kind, Kind::Consistency) && self.skip_if_content.is_some() {
+            return Err(
+                "consistency rules take no skipIfContent; narrow their scopes with exclude".into(),
+            );
+        }
         let (matcher, dialect_note) = match (self.kind, self.pattern, self.selector, self.structure)
         {
+            (Kind::Consistency, None, None, None) => {
+                let (rule, count) = self.consistency.expect("checked above").compile()?;
+                *policy_globs += count;
+                if *policy_globs > MAX_POLICY_GLOBS {
+                    return Err(format!(
+                        "the policy uses more than {MAX_POLICY_GLOBS} path and exclusion globs across all rules; share fewer, broader globs"
+                    ));
+                }
+                (Matcher::Consistency(Box::new(rule)), None)
+            }
             (Kind::Text, Some(pattern), None, None) => {
                 let (trigger, note) = Matcher::compile(pattern)?;
                 match self.requires {
@@ -458,7 +524,7 @@ impl Rule {
             _ => {
                 return Err(
                     "text rules require a pattern, syntax rules require a selector, \
-                     structured rules require a structure, forbidden-path rules omit all three"
+                     structured rules require a structure, forbidden-path and consistency rules omit all three"
                         .into(),
                 );
             }
@@ -491,8 +557,20 @@ impl Rule {
             return Err("provide 1 to 64 fixtures".into());
         }
         let mut fixtures = Vec::with_capacity(self.fixtures.len());
-        for fixture in self.fixtures {
-            let path = fixture.path;
+        for (index, fixture) in self.fixtures.into_iter().enumerate() {
+            if let Matcher::Consistency(_) = matcher {
+                fixtures.push(consistency_fixture(index, fixture)?);
+                continue;
+            }
+            if fixture.files.is_some() || fixture.expect_findings.is_some() {
+                return Err(format!(
+                    "fixture {}: files and expectFindings are for consistency rules; use path and expect",
+                    index + 1
+                ));
+            }
+            let Some(path) = fixture.path else {
+                return Err(format!("fixture {}: provide a path", index + 1));
+            };
             if !valid_path(&path) {
                 return Err(format!("invalid fixture path {path:?}"));
             }
@@ -523,6 +601,7 @@ impl Rule {
             let locations = match &expect {
                 Expect::First(location) => location.as_slice(),
                 Expect::All(locations) => locations,
+                Expect::Findings(_) => unreachable!("consistency fixtures are compiled apart"),
             };
             if locations
                 .iter()
@@ -540,6 +619,7 @@ impl Rule {
             fixtures.push(Fixture {
                 path,
                 content: fixture.content,
+                files: Vec::new(),
                 expect,
             });
         }
@@ -558,6 +638,62 @@ impl Rule {
             dialect_note,
         })
     }
+}
+
+/// A consistency fixture: a synthetic inventory of files and every finding
+/// the rule reports on it.
+fn consistency_fixture(index: usize, fixture: FixtureSource) -> Result<Fixture> {
+    let label = format!("fixture {}", index + 1);
+    let (Some(files), Some(expected)) = (fixture.files, fixture.expect_findings) else {
+        return Err(format!(
+            "{label}: consistency fixtures take files and expectFindings"
+        ));
+    };
+    if fixture.path.is_some()
+        || fixture.content.is_some()
+        || fixture.expect.is_some()
+        || fixture.expect_all.is_some()
+    {
+        return Err(format!(
+            "{label}: consistency fixtures take only files and expectFindings"
+        ));
+    }
+    if !(1..=64).contains(&files.len()) {
+        return Err(format!("{label}: provide 1 to 64 files"));
+    }
+    let mut inventory = BTreeMap::new();
+    for file in files {
+        if !valid_path(&file.path) {
+            return Err(format!("{label}: invalid file path {:?}", file.path));
+        }
+        if inventory.insert(file.path.clone(), file.content).is_some() {
+            return Err(format!("{label}: lists {:?} twice", file.path));
+        }
+    }
+    let mut findings = Vec::with_capacity(expected.len());
+    for found in expected {
+        if found.line == 0 || found.column == 0 {
+            return Err(format!("{label}: expectFindings uses one-based locations"));
+        }
+        findings.push((
+            found.path,
+            Location {
+                line: found.line,
+                column: found.column,
+            },
+        ));
+    }
+    if findings.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(format!(
+            "{label}: list expectFindings by path, then location, without duplicates"
+        ));
+    }
+    Ok(Fixture {
+        path: inventory.keys().next().cloned().unwrap_or_default(),
+        content: None,
+        files: inventory.into_iter().collect(),
+        expect: Expect::Findings(findings),
+    })
 }
 
 /// Mirrors the provenance `pattern` and `maxLength` in schema/policy-v1.json: an
@@ -584,7 +720,7 @@ fn references(field: &str, names: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn valid_name(name: &str) -> bool {
+pub(crate) fn valid_name(name: &str) -> bool {
     name.len() <= 128
         && name.split('/').all(|part| {
             !part.is_empty()
@@ -746,7 +882,7 @@ impl ContentSkip {
     }
 }
 
-fn globs(field: &str, patterns: &[impl AsRef<str>]) -> Result<GlobSet> {
+pub(crate) fn globs(field: &str, patterns: &[impl AsRef<str>]) -> Result<GlobSet> {
     let mut set = GlobSetBuilder::new();
     for pattern in patterns {
         let pattern = pattern.as_ref();
@@ -809,7 +945,7 @@ impl Matcher {
     }
 
     pub fn needs_text(&self) -> bool {
-        !matches!(self, Self::ForbiddenPath)
+        !matches!(self, Self::ForbiddenPath | Self::Consistency(_))
     }
 
     pub fn location(&self, path: &str, content: Option<&str>) -> Result<Option<Location>> {
@@ -844,6 +980,9 @@ impl Matcher {
             Self::Syntax(selector) => selector.find(path, content, trees)?,
             Self::Structured(structure) => structure.find_all(path, content, 1)?.into_iter().next(),
             Self::ForbiddenPath => return Ok(Some((Location { line: 1, column: 1 }, None))),
+            Self::Consistency(_) => {
+                return Err("consistency rules are judged across files, not per file".into());
+            }
             Self::Requires {
                 trigger,
                 requirement,
@@ -866,7 +1005,7 @@ impl Matcher {
             ),
             Self::ForbiddenPath => Some("forbidden-path rules report at most one finding per path"),
             Self::Requires { trigger, .. } => trigger.all_matches_unsupported(),
-            Self::Literal(_) | Self::Regex(_) | Self::Structured(_) => None,
+            Self::Literal(_) | Self::Regex(_) | Self::Structured(_) | Self::Consistency(_) => None,
         }
     }
 
@@ -949,7 +1088,7 @@ impl Matcher {
 }
 
 /// The one-based line and Unicode scalar column of a byte offset.
-fn locate(content: &str, start: usize) -> Location {
+pub(crate) fn locate(content: &str, start: usize) -> Location {
     let before = &content[..start];
     let line = before.bytes().filter(|byte| *byte == b'\n').count() + 1;
     let column = before
@@ -967,6 +1106,14 @@ impl CompiledRule {
     /// exclusion glob. Path checks never read content.
     pub fn applies_to(&self, path: &str) -> bool {
         self.scope.is_match(path) && !self.exclude.is_match(path)
+    }
+
+    /// Whether a scan must read this in-scope file's text for the rule.
+    pub fn reads(&self, path: &str) -> bool {
+        match &self.matcher {
+            Matcher::Consistency(rule) => rule.reads(path),
+            matcher => matcher.needs_text(),
+        }
     }
 
     /// Whether `path` is one of the files that show the guarded area exists.

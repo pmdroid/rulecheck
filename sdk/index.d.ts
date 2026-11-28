@@ -79,6 +79,38 @@ export interface Structure {
   assert: StructureAssert;
 }
 
+/**
+ * One named scope of a consistency rule: files inside the rule's `paths` that also match these
+ * `paths` and no `exclude` glob. `extract` is a Rust regex with exactly one capture group around
+ * the value; use `(?m)` for `^` and `$` at line boundaries. Values are trimmed of surrounding
+ * whitespace, empty values are dropped and a repeated value counts once.
+ */
+export interface ConsistencyScope {
+  /** Lowercase letters, digits, hyphens and slashes; shown in findings. */
+  name: string;
+  paths: readonly string[];
+  exclude?: readonly string[];
+  extract: string;
+}
+
+/**
+ * `same-values` reports each value found in one scope but not the other. `path-exists` reports
+ * each value of `source` that does not resolve to a regular file of the rule's inventory (its
+ * `paths`, `exclude` and `excludeSets`). References resolve lexically from the repository root
+ * (`base: "root"`) or the referencing file's directory (`base: "file"`); one that is absolute
+ * or climbs above the root is reported as escaping the repository.
+ */
+export type Consistency =
+  | { form: "same-values"; left: ConsistencyScope; right: ConsistencyScope }
+  | { form: "path-exists"; source: ConsistencyScope; base: "root" | "file" };
+
+/** A consistency fixture: a synthetic inventory and every finding the rule reports on it. */
+export interface ConsistencyFixture {
+  files: readonly { path: string; content?: string }[];
+  /** Ordered by path, then line and column. An empty list expects none. */
+  expectFindings: readonly { path: string; line: number; column: number }[];
+}
+
 interface RuleFields {
   id: string;
   /** Positive, case-sensitive repository-relative globs. A file is in scope when any entry matches. */
@@ -148,6 +180,12 @@ export type Rule = RuleFields & (
       anchors?: readonly string[];
       skipIfContent?: never;
       fixtures: readonly { path: string; expect: Location | null }[];
+    }
+  | {
+      kind: "consistency";
+      consistency: Consistency;
+      skipIfContent?: never;
+      fixtures: readonly ConsistencyFixture[];
     }
 );
 

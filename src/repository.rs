@@ -1,3 +1,4 @@
+use crate::consistency::Accumulator;
 use crate::policy::{
     CompiledRule, Location, MAX_FILE, Matcher, Result, Span, bounded_read, valid_path,
 };
@@ -49,6 +50,8 @@ pub enum Matches {
 pub struct Report<'a> {
     pub findings: Vec<Finding<'a>>,
     pub empty_scopes: Vec<&'a str>,
+    /// Consistency rules and their scopes that matched no inventory file.
+    pub empty_consistency: Vec<(&'a str, &'a str)>,
     pub missing_anchors: Vec<&'a str>,
     pub partial: Option<Partial<'a>>,
 }
@@ -90,6 +93,7 @@ pub fn check<'a>(
         ));
     }
     let index = git_output(root, &["ls-files", "--stage", "-z"], MAX_ENTRIES)?;
+    let special = tracked_special_paths(&index)?;
     let mut paths = tracked_regular_paths(&index)?;
     let others;
     if untracked {
@@ -102,18 +106,25 @@ pub fn check<'a>(
         paths.sort_unstable();
         paths.dedup();
     }
-    scan(paths, rules, matches, budget, |path, needs_text| {
-        let Some(file) = open_candidate(&directory, path)? else {
-            return Ok(None);
-        };
-        let bytes = if needs_text {
-            bounded_read(BufReader::new(file), MAX_FILE)
-                .map_err(|err| format!("cannot read text: {err}"))?
-        } else {
-            Vec::new()
-        };
-        Ok(Some(bytes))
-    })
+    scan(
+        paths,
+        &special,
+        rules,
+        matches,
+        budget,
+        |path, needs_text| {
+            let Some(file) = open_candidate(&directory, path)? else {
+                return Ok(None);
+            };
+            let bytes = if needs_text {
+                bounded_read(BufReader::new(file), MAX_FILE)
+                    .map_err(|err| format!("cannot read text: {err}"))?
+            } else {
+                Vec::new()
+            };
+            Ok(Some(bytes))
+        },
+    )
 }
 
 pub fn check_commit<'a>(
@@ -140,8 +151,14 @@ pub fn check_commit<'a>(
             return Err(format!("unsupported Git path {path:?}"));
         }
     }
+    let special: Vec<&str> = entries
+        .iter()
+        .filter(|(_, (kind, _))| !matches!(*kind, "100644 blob" | "100755 blob"))
+        .map(|(path, _)| *path)
+        .collect();
     scan(
         entries.keys().copied(),
+        &special,
         rules,
         matches,
         budget,
@@ -165,6 +182,7 @@ pub fn check_commit<'a>(
 
 fn scan<'a, 'p>(
     paths: impl IntoIterator<Item = &'p str>,
+    special: &[&str],
     rules: &[&'a CompiledRule],
     matches: Matches,
     budget: usize,
@@ -176,6 +194,28 @@ fn scan<'a, 'p>(
     let mut partial: Option<Partial> = None;
     let mut unevaluated = vec![false; rules.len()];
     let mut anchored = vec![false; rules.len()];
+    // A consistency rule's inventory must be the same in a working tree and a
+    // commit. The working tree lists only regular files, so a symlink or
+    // submodule in the rule's scope is refused in both modes before any read.
+    for path in special {
+        if let Some(rule) = rules
+            .iter()
+            .find(|rule| matches!(rule.matcher, Matcher::Consistency(_)) && rule.applies_to(path))
+        {
+            return Err(format!(
+                "[{}] {path}: a symlink or submodule is in the scope of a consistency rule, \
+                 which judges regular files only; exclude it",
+                rule.id
+            ));
+        }
+    }
+    let mut accumulators: Vec<Option<Accumulator>> = rules
+        .iter()
+        .map(|rule| match &rule.matcher {
+            Matcher::Consistency(consistency) => Some(Accumulator::new(consistency)),
+            _ => None,
+        })
+        .collect();
     for path in paths {
         let anchoring: Vec<_> = rules
             .iter()
@@ -212,9 +252,7 @@ fn scan<'a, 'p>(
             continue;
         };
         let context = |err| format!("[{}] {path}: {err}", first.id);
-        let text_rule = applicable
-            .clone()
-            .find(|(_, rule)| rule.matcher.needs_text());
+        let text_rule = applicable.clone().find(|(_, rule)| rule.reads(path));
         let read_context = |err| {
             format!(
                 "[{}] {path}: {err}",
@@ -256,6 +294,13 @@ fn scan<'a, 'p>(
                 continue;
             }
             hits[index] += 1;
+            if let Some(accumulator) = &mut accumulators[index] {
+                let text = content.as_deref().filter(|_| rule.reads(path));
+                accumulator
+                    .add(path, text)
+                    .map_err(|err| format!("[{}] {err}", rule.id))?;
+                continue;
+            }
             let found = match matches {
                 Matches::First => rule
                     .matcher
@@ -300,6 +345,38 @@ fn scan<'a, 'p>(
         .filter(|((rule, count), skipped)| rule.matcher.needs_text() && *count == 0 && !**skipped)
         .map(|((rule, _), _)| rule.id.as_str())
         .collect();
+    let mut empty_consistency = Vec::new();
+    // A consistency rule is judged only over its whole inventory: after a
+    // budget stop it reports nothing, and a scope with no file cannot be judged.
+    for ((rule, accumulator), skipped) in rules.iter().zip(accumulators).zip(&unevaluated) {
+        let Some(accumulator) = accumulator else {
+            continue;
+        };
+        if *skipped {
+            continue;
+        }
+        let empty = accumulator.empty_scopes();
+        if !empty.is_empty() {
+            empty_consistency.extend(empty.into_iter().map(|scope| (rule.id.as_str(), scope)));
+            continue;
+        }
+        for hit in accumulator.finish() {
+            if findings.len() >= MAX_FINDINGS {
+                return Err(format!(
+                    "[{}] more than 10,000 findings; narrow the path scope",
+                    rule.id
+                ));
+            }
+            findings.push(Finding {
+                path: hit.path,
+                location: hit.location,
+                id: &rule.id,
+                span: Some(hit.span),
+                remediation: &rule.remediation,
+                message: Some(hit.message),
+            });
+        }
+    }
     let missing_anchors = rules
         .iter()
         .zip(&anchored)
@@ -318,6 +395,7 @@ fn scan<'a, 'p>(
     Ok(Report {
         findings,
         empty_scopes,
+        empty_consistency,
         missing_anchors,
         partial,
     })
@@ -366,6 +444,20 @@ fn tracked_regular_paths(index: &[u8]) -> Result<Vec<&str>> {
         }
     }
     paths.sort_unstable();
+    Ok(paths)
+}
+
+/// Index entries that are neither regular files nor deleted: symlinks
+/// (120000) and submodules (160000).
+fn tracked_special_paths(index: &[u8]) -> Result<Vec<&str>> {
+    let index = std::str::from_utf8(index).map_err(|_| "Git paths must be UTF-8")?;
+    let mut paths = Vec::new();
+    for record in index.split_terminator('\0') {
+        let (fields, path) = record.split_once('\t').ok_or("invalid Git index entry")?;
+        if matches!(fields.split(' ').next(), Some("120000" | "160000")) {
+            paths.push(path);
+        }
+    }
     Ok(paths)
 }
 
