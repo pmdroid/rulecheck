@@ -166,13 +166,33 @@ Every limit fails closed with exit 2 and a message naming the limit:
 | Input | Limit |
 | --- | --- |
 | Rule source file | 128 KiB |
-| Policy JSON | 1 MiB and 128 rules |
+| Policy JSON | 4 MiB and 1 to 1024 rules |
+| Rules directory | 20,000 entries, nested up to 32 directories below `.rulecheck/rules` |
 | Scoped text file | 1 MiB |
 | Scoped text in one scan | 64 MiB by default; `--text-budget` sets 1 to 1024 MiB. Reaching it stops with partial findings. |
 | Git index or tree listing | 8 MiB |
 | Findings | 10,000 |
 | Baseline file | 4 MiB, and 1 to 10,000 per rule and path |
 | Builder run, and evaluator run under the installed command | 120 s each |
+
+The builder, the installed command, the evaluator and `schema/policy-v1.json` share the policy limits, so a policy one of them accepts is never refused by another. A rules directory with more than 1024 `.rule.ts` files fails the same way in the working tree and with `--commit`:
+
+```text
+rulecheck build: .rulecheck/rules: more than 1024 .rule.ts files; a policy holds at most 1024 rules
+```
+
+The other limits don't grow with the rule count. The 10,000-finding limit and the text budget apply to the whole scan, not to each rule, and a file in the scope of many rules is read and counted once. Syntax rules that apply to the same file share one parse. Each rule still has its own limits: 16 path and 16 exclude globs, 64 fixtures, and a pattern of up to 4096 bytes. A regex compiles to at most 256 KiB, so 1024 regex rules with the most complex patterns can take a few hundred MiB of memory. Prefer literal patterns and a few narrow regexes.
+
+### Large policies
+
+`node tools/bench-rules.mjs` builds a synthetic repository with N rule files (default 360) in nested package directories, 30 per package, cycling through literal, regex, forbidden-path and TypeScript syntax rules. Each package has 20 source files of 8 KiB, and every other package has one violation per rule. Through the installed wrapper and the release evaluator, it times the builder alone, `validate`, `test`, a working-tree `check` and a `check --commit` of the same snapshot, takes the median of 3 runs, and checks that both checks report the same findings. Samples on an 8-core Linux runner:
+
+| Rules | Source files | Policy JSON | Build | `validate` | `test` | `check` | `check --commit` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 360 | 240 | 91 KiB | 0.7 s | 0.8 s | 0.9 s | 1.1 s | 2.1 s |
+| 1024 | 700 | 259 KiB | 0.7 s | 0.9 s | 0.9 s | 2.7 s | 7.9 s |
+
+Building from a commit reads every rule blob in one Git batch, so it takes about as long as building from the working tree. `check --commit` takes longer than a working-tree check because the evaluator reads each scoped file from Git separately. That cost grows with the number of files in scope, not with the number of rules. Times vary by machine, and the script prints its own measurements. Use `--rules`, `--files` and `--runs` to change the snapshot.
 
 ## Reproducibility
 
