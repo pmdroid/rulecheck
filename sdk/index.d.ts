@@ -35,6 +35,19 @@ export interface SkipIfContent {
 }
 
 /**
+ * Skips a text rule's match that lies wholly inside one of `contexts`, as parsed by the pinned
+ * TypeScript grammar (.ts, .mts and .cts files, and .tsx with the TSX grammar). "comment" covers
+ * line and block comments. "string" covers quoted strings and the literal parts of template
+ * strings, not their `${...}` substitutions. Each match is judged on its own, so a skipped one
+ * never hides a later match. When the pattern matches in a file the grammar does not cover or
+ * cannot parse, the match cannot be classified and the check exits 2.
+ */
+export interface IgnoreInside {
+  language: "typescript";
+  contexts: readonly ("comment" | "string")[];
+}
+
+/**
  * A named, reusable list of exclusion globs in `.rulecheck/sets/<name>.set.ts`. Rules refer to
  * it with `excludeSets: ["<name>"]`. Rulecheck reads it as static data from the same worktree or
  * commit as the rules; nothing in it runs. `include` adds other sets' globs.
@@ -156,6 +169,7 @@ export type Rule = RuleFields & (
        * anywhere reports none of them. A regex that can match empty text is refused.
        */
       requires?: { kind: "literal" | "regex"; value: string };
+      ignoreInside?: IgnoreInside;
       skipIfContent?: SkipIfContent;
       /**
        * Optional per-finding detail for a regex pattern: plain text with `{name}` references to

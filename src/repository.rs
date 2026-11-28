@@ -319,6 +319,7 @@ fn scan<'a, 'p>(
                     path,
                     content.as_deref(),
                     MAX_FINDINGS - findings.len() + 1,
+                    &mut trees,
                 ),
             }
             .map_err(|err| format!("[{}] {path}: {err}", rule.id))?;

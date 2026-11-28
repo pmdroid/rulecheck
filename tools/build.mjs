@@ -244,7 +244,7 @@ function checkShape(rule, fail, setNames) {
 
   if (!isObject(rule)) fail(undefined, undefined, "The rule must be an object", "Pass an object literal to defineRule.");
   fields(rule, "the rule", ["id", "kind", "paths", "exclude", "excludeSets", "skipIfContent", "anchors", "remediation", "message", "pattern",
-    "requires", "selector", "structure", "consistency", "provenance", "tags", "fixtures"], ["id", "kind", "paths", "remediation", "fixtures"]);
+    "requires", "ignoreInside", "selector", "structure", "consistency", "provenance", "tags", "fixtures"], ["id", "kind", "paths", "remediation", "fixtures"]);
   expect(rule, "id", "rule", (value) => typeof value === "string", "a string");
   expect(rule, "kind", "rule", (value) => ["text", "forbidden-path", "syntax", "structured", "consistency"].includes(value),
     '"text", "forbidden-path", "syntax", "structured" or "consistency"');
@@ -374,6 +374,10 @@ function checkShape(rule, fail, setNames) {
     fail(rule, "requires", `${syntax ? "Syntax" : structured ? "Structured" : consistency ? "Consistency" : "Forbidden-path"} rules have no requires`,
       'Remove requires or use kind: "text".');
   }
+  if (rule.kind !== "text" && Object.hasOwn(rule, "ignoreInside")) {
+    fail(rule, "ignoreInside", `${syntax ? "Syntax" : structured ? "Structured" : consistency ? "Consistency" : "Forbidden-path"} rules have no ignoreInside`,
+      syntax ? "Remove ignoreInside: a selector picks node kinds itself." : 'Remove ignoreInside or use kind: "text".');
+  }
   if (syntax && !Object.hasOwn(rule, "selector")) {
     fail(rule, undefined, "Syntax rules require a selector", 'Add selector: { language: "typescript", node: "comment" }.');
   }
@@ -418,6 +422,14 @@ function checkShape(rule, fail, setNames) {
       fields(rule.requires, "the requires pattern", ["kind", "value"], ["kind", "value"]);
       expect(rule.requires, "kind", "requires", (value) => ["literal", "regex"].includes(value), '"literal" or "regex"');
       expect(rule.requires, "value", "requires", (value) => typeof value === "string", "a string");
+    }
+    if (Object.hasOwn(rule, "ignoreInside")) {
+      expect(rule, "ignoreInside", "rule", isObject, "an object { language, contexts }");
+      fields(rule.ignoreInside, "the ignoreInside", ["language", "contexts"], ["language", "contexts"]);
+      expect(rule.ignoreInside, "language", "ignoreInside", (value) => value === "typescript", '"typescript"');
+      expect(rule.ignoreInside, "contexts", "ignoreInside", (value) => Array.isArray(value) && value.length >= 1
+        && value.length <= 2 && new Set(value).size === value.length && value.every((context) => ["comment", "string"].includes(context)),
+        'a list of distinct contexts: "comment", "string"');
     }
   }
 

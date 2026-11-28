@@ -80,6 +80,26 @@ Give such a rule fixtures for all three cases: no trigger (`expect: null`), the 
 
 `requires` is a `{ kind: "literal" | "regex", value }` object, like `pattern`. The builder rejects it on syntax and forbidden-path rules at the rule file's line and column. The evaluator rejects a regex requirement that can match empty text, because every file would meet it. The baseline `matcher` digest includes `requires`, so changing the requirement invalidates that rule's recorded counts. Rulecheck releases from before `requires` reject a policy that uses it as an unknown field (exit 2), so update every evaluator that checks the repository, including the trusted base tools in CI, before you use it.
 
+## Skip matches in comments and strings
+
+A text rule with `ignoreInside` skips a `pattern` match that lies wholly inside a parsed comment or string:
+
+```ts
+export default defineRule({
+  id: "source/no-eval",
+  kind: "text",
+  paths: ["src/**/*.ts", "src/**/*.tsx"],
+  pattern: { kind: "regex", value: "\\beval\\(" },
+  ignoreInside: { language: "typescript", contexts: ["comment", "string"] },
+  remediation: "Parse the input instead of calling eval.",
+  // ...
+});
+```
+
+The filter applies to each match, not to the file. A skipped match never hides a later one, in the default first-match check, with `--all-matches` and in fixtures. `language` is `"typescript"`, the only language so far: `.ts`, `.mts` and `.cts` files parse with the TypeScript grammar and `.tsx` files with the TSX grammar. `contexts` lists `"comment"`, `"string"` or both, each once. A string context is a quoted string or the literal text of a template string, not a `${...}` substitution. With `requires`, only the `pattern` matches are filtered.
+
+The file is parsed only when the pattern matches in it. If it can't be classified, because it doesn't parse or the grammar doesn't cover its extension, `check` exits 2 and `test` reports the fixture as one that cannot be judged. Rulecheck never guesses whether such a match counts. Narrow `paths` to the files the grammar covers. Only text rules take `ignoreInside`. The builder rejects it on syntax and forbidden-path rules, and the baseline `matcher` digest includes it. Rulecheck releases from before `ignoreInside` reject a policy that uses it as an unknown field (exit 2), so update every evaluator that checks the repository, including the trusted base tools in CI, before you use it. The [cookbook recipe](../cookbook/#skip-matches-in-comments-and-strings) runs it.
+
 ## Record where a rule came from
 
 A rule can name the review finding that led to it:
