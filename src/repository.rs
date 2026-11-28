@@ -11,15 +11,25 @@ const MAX_ENTRIES: usize = 8 * 1024 * 1024;
 const MAX_TEXT: usize = 64 * 1024 * 1024;
 const MAX_FINDINGS: usize = 10_000;
 
-/// One rule's first match in one file. The derived order (path, location, rule
-/// ID) is the published output order.
+/// One rule's first match in one file, or with all-match mode one of its
+/// matches. The derived order (path, location, rule ID, then byte range) is the
+/// published output order.
 #[derive(Eq, Ord, PartialEq, PartialOrd)]
 pub struct Finding<'a> {
     pub path: String,
     pub location: Location,
     pub id: &'a str,
-    pub remediation: &'a str,
     pub span: Option<Span>,
+    pub remediation: &'a str,
+}
+
+/// How many findings each rule reports per file.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Matches {
+    /// The v1 default: the first match.
+    First,
+    /// Every match of a text rule; still one finding per forbidden path.
+    All,
 }
 
 /// A completed scan. Text rules in `empty_scopes` matched no candidate file, so
@@ -34,7 +44,12 @@ pub const ROOT_HINT: &str = "run from the checkout root or pass --root";
 /// Scans the working tree. The inventory is the regular files in the Git index;
 /// with `untracked`, non-ignored untracked files are added. Both are read with
 /// the same no-follow rules, and deleted index entries are skipped.
-pub fn check<'a>(root: &Path, rules: &[&'a CompiledRule], untracked: bool) -> Result<Report<'a>> {
+pub fn check<'a>(
+    root: &Path,
+    rules: &[&'a CompiledRule],
+    untracked: bool,
+    matches: Matches,
+) -> Result<Report<'a>> {
     let directory = open(root, directory_flags(), Mode::empty())
         .map_err(|err| format!("cannot open checkout {}: {err}", root.display()))?;
     if !git_output(root, &["rev-parse", "--show-prefix"], 4096)?
@@ -59,7 +74,7 @@ pub fn check<'a>(root: &Path, rules: &[&'a CompiledRule], untracked: bool) -> Re
         paths.sort_unstable();
         paths.dedup();
     }
-    scan(paths, rules, |path, needs_text| {
+    scan(paths, rules, matches, |path, needs_text| {
         let Some(file) = open_candidate(&directory, path)? else {
             return Ok(None);
         };
@@ -73,7 +88,12 @@ pub fn check<'a>(root: &Path, rules: &[&'a CompiledRule], untracked: bool) -> Re
     })
 }
 
-pub fn check_commit<'a>(root: &Path, sha: &str, rules: &[&'a CompiledRule]) -> Result<Report<'a>> {
+pub fn check_commit<'a>(
+    root: &Path,
+    sha: &str,
+    rules: &[&'a CompiledRule],
+    matches: Matches,
+) -> Result<Report<'a>> {
     if git_output(root, &["cat-file", "-t", sha], 32)? != b"commit\n" {
         return Err("--commit requires a Git commit object".into());
     }
@@ -91,26 +111,32 @@ pub fn check_commit<'a>(root: &Path, sha: &str, rules: &[&'a CompiledRule]) -> R
             return Err(format!("unsupported Git path {path:?}"));
         }
     }
-    scan(entries.keys().copied(), rules, |path, needs_text| {
-        let (kind, oid) = entries[path];
-        if !matches!(kind, "100644 blob" | "100755 blob") {
-            return Err("expected a regular Git blob for this scoped path".into());
-        }
-        if git_output(root, &["cat-file", "-t", oid], 32)? != b"blob\n" {
-            return Err("expected a Git blob object".into());
-        }
-        let bytes = if needs_text {
-            git_output(root, &["cat-file", "blob", oid], MAX_FILE)?
-        } else {
-            Vec::new()
-        };
-        Ok(Some(bytes))
-    })
+    scan(
+        entries.keys().copied(),
+        rules,
+        matches,
+        |path, needs_text| {
+            let (kind, oid) = entries[path];
+            if !matches!(kind, "100644 blob" | "100755 blob") {
+                return Err("expected a regular Git blob for this scoped path".into());
+            }
+            if git_output(root, &["cat-file", "-t", oid], 32)? != b"blob\n" {
+                return Err("expected a Git blob object".into());
+            }
+            let bytes = if needs_text {
+                git_output(root, &["cat-file", "blob", oid], MAX_FILE)?
+            } else {
+                Vec::new()
+            };
+            Ok(Some(bytes))
+        },
+    )
 }
 
 fn scan<'a, 'p>(
     paths: impl IntoIterator<Item = &'p str>,
     rules: &[&'a CompiledRule],
+    matches: Matches,
     read: impl Fn(&str, bool) -> Result<Option<Vec<u8>>>,
 ) -> Result<Report<'a>> {
     let mut hits = vec![0; rules.len()];
@@ -154,11 +180,21 @@ fn scan<'a, 'p>(
 
         for (index, rule) in &mut applicable {
             hits[index] += 1;
-            let found = rule
-                .matcher
-                .find(path, content.as_deref())
-                .map_err(|err| format!("[{}] {path}: {err}", rule.id))?;
-            if let Some((location, span)) = found {
+            let found = match matches {
+                Matches::First => rule
+                    .matcher
+                    .find(path, content.as_deref())
+                    .map(Vec::from_iter),
+                // One more than fits, so an overflow is detected without
+                // collecting every match of a huge file.
+                Matches::All => rule.matcher.find_all(
+                    path,
+                    content.as_deref(),
+                    MAX_FINDINGS - findings.len() + 1,
+                ),
+            }
+            .map_err(|err| format!("[{}] {path}: {err}", rule.id))?;
+            for (location, span) in found {
                 if findings.len() >= MAX_FINDINGS {
                     return Err(context("more than 10,000 findings; narrow the path scope"));
                 }

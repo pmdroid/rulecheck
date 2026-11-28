@@ -15,6 +15,7 @@ import pathGlobs from '../../../examples/rules/path-globs.rule.ts?raw';
 import syntax from '../../../examples/rules/syntax.rule.ts?raw';
 import syntaxReuse from '../../../examples/rules/syntax-reuse.rule.ts?raw';
 import syntaxRust from '../../../examples/rules/syntax-rust.rule.ts?raw';
+import allMatches from '../../../examples/rules/all-matches.rule.ts?raw';
 
 Rulecheck supports four matcher forms: **literal text**, **regex text**, **forbidden path**, and **syntax**. The first three recipes show the text and path forms, the middle recipes show how to control where a rule applies, and the [syntax recipes](#comments-in-function-bodies) select TypeScript, TSX and Rust syntax nodes. The code below comes from the same TypeScript files that CI runs. Copy a recipe into `.rulecheck/rules/` and adapt its ID, paths, and fixtures.
 
@@ -85,11 +86,35 @@ Mix an exact repository-relative path with a pattern. This example uses `**` for
 
 ## Reading fixture expectations
 
-Use `expect: null` for a clean or out-of-scope example, or an exact `{ line, column }` for a finding. A fixture expects at most one location because each rule reports at most one finding per file. A text fixture must provide `content`; a forbidden-path fixture must omit it. The cookbook runner checks fixture expectations and then scans real tracked files. It also verifies exit 2 for an unsupported policy version.
+Use `expect: null` for a clean or out-of-scope example, or an exact `{ line, column }` for a finding. `expect` names at most one location because by default each rule reports at most one finding per file. To assert every match, use [`expectAll`](#count-every-match). A text fixture must provide `content`; a forbidden-path fixture must omit it. The cookbook runner checks fixture expectations and then scans real tracked files. It also verifies exit 2 for an unsupported policy version.
 
-One finding per rule per file, at the first match, is the v1 contract for `check` and its JSON output. Fix that match and run the check again to see the next one. Reporting every match would change finding counts, so it is reserved for a later flag or contract version.
+One finding per rule per file, at the first match, is the v1 default for `check` and its JSON output. Fix that match and run the check again to see the next one, or count every match with [`--all-matches`](#count-every-match).
 
 Text and forbidden-path matchers do not parse an AST or understand whether text is inside a comment or a string. Use a syntax rule when the difference matters.
+
+## Count every match
+
+`rulecheck check --all-matches` reports every match of a text rule, not only the first per file. A fixture can assert all of those positions with `expectAll`, a list of `{ line, column }` in ascending order, in place of `expect`. An empty list expects no match. One rule can mix both kinds of fixture: `expect` checks the first match and `expectAll` checks every match.
+
+<Code code={allMatches} lang="ts" title="all-matches.rule.ts" />
+
+The runner checks a clean file first, where `TODOS` is not a whole-word marker. Then it adds two markers on line 1 and one on line 2. With `--all-matches`, the working tree and the exact commit both report:
+
+```text
+src/app.ts:1:4: [source/no-todo-markers] Resolve the marker or move it to the issue tracker.
+src/app.ts:1:12: [source/no-todo-markers] Resolve the marker or move it to the issue tracker.
+src/app.ts:2:11: [source/no-todo-markers] Resolve the marker or move it to the issue tracker.
+```
+
+Without the flag, the same file reports only `src/app.ts:1:4`. The `π` before `FIXME` counts as one column but two bytes, so in `--format json` the second finding has `byteStart` 12.
+
+If the third fixture listed only the first two positions, `rulecheck test` would fail at the first difference and show both lists:
+
+```text
+src/app.ts:2:11: [source/no-todo-markers] fixture 3 expected 2 violations at 1:4, 1:12, found 3 violations at 1:4, 1:12, 2:11. Resolve the marker or move it to the issue tracker. Update the rule or fixture.
+```
+
+`expectAll` is for text rules. A forbidden-path rule reports at most one finding per path, and syntax rules aren't counted yet, so the builder and the evaluator reject `expectAll` there. The [CLI reference](../cli/#every-match) defines the match semantics for literal, regex and zero-width patterns.
 
 ## Comments in function bodies
 

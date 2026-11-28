@@ -33,7 +33,7 @@ struct Rule {
     selector: Option<Selector>,
     #[serde(default, deserialize_with = "present")]
     provenance: Option<Provenance>,
-    fixtures: Vec<Fixture>,
+    fixtures: Vec<FixtureSource>,
 }
 
 /// Where a rule came from. It is validated and then dropped: matchers, fixtures
@@ -61,12 +61,27 @@ enum Pattern {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct FixtureSource {
+    path: String,
+    #[serde(default, deserialize_with = "present")]
+    content: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    expect: Option<Option<Location>>,
+    #[serde(default, rename = "expectAll", deserialize_with = "present")]
+    expect_all: Option<Vec<Location>>,
+}
+
 pub struct Fixture {
     pub path: String,
-    #[serde(default, deserialize_with = "present")]
     pub content: Option<String>,
-    #[serde(deserialize_with = "Deserialize::deserialize")]
-    pub expect: Option<Location>,
+    pub expect: Expect,
+}
+
+/// A fixture asserts either the first match (`expect`, the v1 format) or every
+/// match in all-match order (`expectAll`, text rules only).
+pub enum Expect {
+    First(Option<Location>),
+    All(Vec<Location>),
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
@@ -211,24 +226,51 @@ impl Rule {
         if !(1..=64).contains(&self.fixtures.len()) {
             return Err("provide 1 to 64 fixtures".into());
         }
-        for fixture in &self.fixtures {
-            if !valid_path(&fixture.path) {
-                return Err(format!("invalid fixture path {:?}", fixture.path));
+        let mut fixtures = Vec::with_capacity(self.fixtures.len());
+        for fixture in self.fixtures {
+            let path = fixture.path;
+            if !valid_path(&path) {
+                return Err(format!("invalid fixture path {path:?}"));
             }
             if matcher.needs_text() != fixture.content.is_some() {
-                return Err(format!(
-                    "{}: provide content only for text fixtures",
-                    fixture.path
-                ));
+                return Err(format!("{path}: provide content only for text fixtures"));
             }
-            if let Some(location) = fixture.expect
-                && (location.line == 0 || location.column == 0)
+            let expect = match (fixture.expect, fixture.expect_all) {
+                (Some(expect), None) => Expect::First(expect),
+                (None, Some(all)) => {
+                    if let Some(reason) = matcher.all_matches_unsupported() {
+                        return Err(format!(
+                            "{path}: expectAll is not available because {reason}; use expect"
+                        ));
+                    }
+                    if all.windows(2).any(|pair| pair[0] >= pair[1]) {
+                        return Err(format!(
+                            "{path}: list expectAll locations in ascending order without duplicates"
+                        ));
+                    }
+                    Expect::All(all)
+                }
+                _ => {
+                    return Err(format!(
+                        "{path}: provide exactly one of expect or expectAll"
+                    ));
+                }
+            };
+            let locations = match &expect {
+                Expect::First(location) => location.as_slice(),
+                Expect::All(locations) => locations,
+            };
+            if locations
+                .iter()
+                .any(|location| location.line == 0 || location.column == 0)
             {
-                return Err(format!(
-                    "{}: fixture uses one-based locations",
-                    fixture.path
-                ));
+                return Err(format!("{path}: fixture uses one-based locations"));
             }
+            fixtures.push(Fixture {
+                path,
+                content: fixture.content,
+                expect,
+            });
         }
 
         Ok(CompiledRule {
@@ -237,7 +279,7 @@ impl Rule {
             matcher,
             scope,
             exclude,
-            fixtures: self.fixtures,
+            fixtures,
         })
     }
 }
@@ -321,19 +363,88 @@ impl Matcher {
             Self::Syntax(selector) => selector.find(path, content)?,
             Self::ForbiddenPath => return Ok(Some((Location { line: 1, column: 1 }, None))),
         };
-        Ok(span.map(|span| {
-            let before = &content[..span.start];
-            let line = before.bytes().filter(|byte| *byte == b'\n').count() + 1;
-            let column = before
-                .rsplit('\n')
-                .next()
-                .unwrap_or_default()
-                .chars()
-                .count()
-                + 1;
-            (Location { line, column }, Some(span))
-        }))
+        Ok(span.map(|span| (locate(content, span.start), Some(span))))
     }
+
+    /// Why this matcher cannot report every match, or `None` when it can.
+    pub fn all_matches_unsupported(&self) -> Option<&'static str> {
+        match self {
+            Self::Syntax(_) => Some(
+                "syntax rules do not count matching nodes yet, and reporting only their first \
+                 match would undercount",
+            ),
+            Self::ForbiddenPath => Some("forbidden-path rules report at most one finding per path"),
+            Self::Literal(_) | Self::Regex(_) => None,
+        }
+    }
+
+    /// Every match in all-match mode, in ascending byte order, stopping after
+    /// `limit` matches. Literal matches are non-overlapping: the search resumes
+    /// at the end of each match. Regex matches follow `Regex::find_iter`:
+    /// leftmost-first and non-overlapping, empty matches included, except an
+    /// empty match that starts where the previous match ended. A forbidden
+    /// path is one finding. Syntax rules are rejected before a scan starts.
+    pub fn find_all(
+        &self,
+        path: &str,
+        content: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<(Location, Option<Span>)>> {
+        let spans: Vec<Span> = match (self, content) {
+            (Self::Literal(value), Some(content)) => content
+                .match_indices(value.as_str())
+                .take(limit)
+                .map(|(start, found)| Span {
+                    start,
+                    end: start + found.len(),
+                })
+                .collect(),
+            (Self::Regex(regex), Some(content)) => regex
+                .find_iter(content)
+                .take(limit)
+                .map(|found| Span {
+                    start: found.start(),
+                    end: found.end(),
+                })
+                .collect(),
+            (Self::Syntax(_), _) => {
+                return Err(self.all_matches_unsupported().unwrap_or_default().into());
+            }
+            _ => return Ok(self.find(path, content)?.into_iter().collect()),
+        };
+        let content = content.unwrap_or_default();
+        // Matches ascend, so lines and columns are counted in one pass.
+        let (mut offset, mut line, mut column) = (0, 1, 1);
+        Ok(spans
+            .into_iter()
+            .map(|span| {
+                let skipped = &content[offset..span.start];
+                match skipped.rfind('\n') {
+                    Some(last) => {
+                        line += skipped.bytes().filter(|byte| *byte == b'\n').count();
+                        column = skipped[last + 1..].chars().count() + 1;
+                    }
+                    None => column += skipped.chars().count(),
+                }
+                offset = span.start;
+                (Location { line, column }, Some(span))
+            })
+            .collect())
+    }
+}
+
+/// The one-based line and Unicode scalar column of a byte offset.
+fn locate(content: &str, start: usize) -> Location {
+    let before = &content[..start];
+    let line = before.bytes().filter(|byte| *byte == b'\n').count() + 1;
+    let column = before
+        .rsplit('\n')
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .count()
+        + 1;
+    Location { line, column }
 }
 
 impl CompiledRule {

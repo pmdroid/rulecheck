@@ -8,7 +8,7 @@ import { test } from "node:test";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const evaluator = resolve(process.env.RULECHECK_BIN ?? join(root, "target/debug/rulecheck-evaluator"));
-const recipe = (clean, bad, finding) => ({ clean, bad, finding });
+const recipe = (clean, bad, finding, args = []) => ({ clean, bad, finding, args });
 const recipes = {
   literal: recipe({ "config/app.toml": "legacy_mode = false\n" },
     { "config/app.toml": "# settings\nlegacy_mode = true\n" },
@@ -69,7 +69,7 @@ function run(bin, args, { cwd, input, status = 0 } = {}) {
   return result;
 }
 
-for (const [name, { clean, bad, finding }] of Object.entries(recipes)) {
+for (const [name, { clean, bad, finding, args: flags }] of Object.entries(recipes)) {
   test(name, (t) => {
     const cwd = mkdtempSync(join(tmpdir(), "rulecheck-recipe-"));
     t.after(() => rmSync(cwd, { recursive: true, force: true }));
@@ -89,7 +89,7 @@ for (const [name, { clean, bad, finding }] of Object.entries(recipes)) {
     run(evaluator, ["validate"], { input, cwd });
     run(evaluator, ["test"], { input, cwd });
     const scan = ({ policy = input, sha, expected = "" } = {}) => {
-      const args = ["check", "--root", cwd, ...(sha ? ["--commit", sha] : [])];
+      const args = ["check", "--root", cwd, ...flags, ...(sha ? ["--commit", sha] : [])];
       const actual = run(evaluator, args, { input: policy, cwd, status: expected ? 1 : 0 });
       assert.equal(actual.stdout.trimEnd(), expected);
       assert.equal(actual.stderr, "");
@@ -112,6 +112,15 @@ for (const [name, { clean, bad, finding }] of Object.entries(recipes)) {
     write(bad);
     git("add", "-f", "--", ".");
     scan({ expected: finding });
+    if (name === "all-matches") {
+      // Without the flag the same file reports its first match only, and the
+      // exact commit reports the same matches as the working tree.
+      const first = run(evaluator, ["check", "--root", cwd], { input, cwd, status: 1 });
+      assert.equal(first.stdout.trimEnd(), finding.split("\n")[0]);
+      git("-c", "user.name=Rulecheck", "-c", "user.email=rulecheck@example.invalid",
+        "-c", "commit.gpgsign=false", "commit", "-qm", "Add markers");
+      scan({ expected: finding, sha: git("rev-parse", "HEAD") });
+    }
     if (name === "scope") {
       write(clean);
       scan();

@@ -37,11 +37,21 @@ interface RuleFields {
   provenance?: { finding: string };
 }
 
+/**
+ * A text fixture asserts either the first match with `expect` (null for none), or every match
+ * with `expectAll`: the locations that `rulecheck check --all-matches` reports for the content,
+ * in ascending order. An empty `expectAll` expects no match.
+ */
+export type TextFixture = { path: string; content: string } & (
+  | { expect: Location | null; expectAll?: never }
+  | { expectAll: readonly Location[]; expect?: never }
+);
+
 export type Rule = RuleFields & (
   | {
       kind: "text";
       pattern: { kind: "literal" | "regex"; value: string };
-      fixtures: readonly { path: string; content: string; expect: Location | null }[];
+      fixtures: readonly TextFixture[];
     }
   | {
       kind: "syntax";

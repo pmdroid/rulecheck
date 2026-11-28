@@ -241,18 +241,39 @@ function checkShape(rule, fail) {
   for (const [index, fixture] of rule.fixtures.entries()) {
     const label = `fixture ${index + 1}`;
     if (!isObject(fixture)) fail(rule.fixtures, index, `${label} must be an object`, "Write { path, content, expect }.");
-    fields(fixture, label, ["path", "content", "expect"], text ? ["path", "content", "expect"] : ["path", "expect"]);
+    const all = Object.hasOwn(fixture, "expectAll");
+    fields(fixture, label, ["path", "content", "expect", "expectAll"],
+      [...(text ? ["path", "content"] : ["path"]), ...(all ? [] : ["expect"])]);
     expect(fixture, "path", label, (value) => typeof value === "string", "a string");
     expect(fixture, "content", label, (value) => typeof value === "string", "a string");
     if (!text && Object.hasOwn(fixture, "content")) {
       fail(fixture, "content", `${label} has content, but forbidden-path fixtures match the path only`, "Remove content.");
     }
-    expect(fixture, "expect", label, (value) => value === null || isObject(value),
-      "null or { line, column }");
-    if (fixture.expect !== null) {
-      fields(fixture.expect, `${label} expect`, ["line", "column"], ["line", "column"]);
-      expect(fixture.expect, "line", `${label} expect`, isCount, "a one-based integer");
-      expect(fixture.expect, "column", `${label} expect`, isCount, "a one-based integer");
+    const location = (value, where) => {
+      fields(value, where, ["line", "column"], ["line", "column"]);
+      expect(value, "line", where, isCount, "a one-based integer");
+      expect(value, "column", where, isCount, "a one-based integer");
+    };
+    if (all) {
+      // Mirrors Matcher::all_matches_unsupported in src/policy.rs.
+      if (rule.kind !== "text") {
+        fail(fixture, "expectAll", syntax
+          ? `${label} uses expectAll, but syntax rules do not count matching nodes yet`
+          : `${label} uses expectAll, but forbidden-path rules report at most one finding per path`, "Use expect.");
+      }
+      if (Object.hasOwn(fixture, "expect")) {
+        fail(fixture, "expectAll", `${label} has both expect and expectAll`, "Keep one of them.");
+      }
+      expect(fixture, "expectAll", label, (value) => Array.isArray(value), "an array of { line, column }");
+      for (const [position, value] of fixture.expectAll.entries()) {
+        const where = `${label} expectAll ${position + 1}`;
+        if (!isObject(value)) fail(fixture.expectAll, position, `${where} must be an object`, "Write { line, column }.");
+        location(value, where);
+      }
+    } else {
+      expect(fixture, "expect", label, (value) => value === null || isObject(value),
+        "null or { line, column }");
+      if (fixture.expect !== null) location(fixture.expect, `${label} expect`);
     }
   }
 }
