@@ -514,6 +514,7 @@ fn schema_sdk_and_evaluator_accept_the_same_rule_fields() {
             "pattern",
             "provenance",
             "remediation",
+            "requires",
             "selector"
         ]
     );
@@ -547,6 +548,7 @@ fn schema_sdk_and_evaluator_accept_the_same_rule_fields() {
         "kind: \"syntax\";",
         "selector: Selector;",
         "pattern: { kind: \"literal\" | \"regex\"; value: string };",
+        "requires?: { kind: \"literal\" | \"regex\"; value: string };",
         "path: string; content: string; expect: Location | null",
         "path: string; expect: Location | null",
         "{ path: string; content: string } & (",

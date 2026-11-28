@@ -32,6 +32,8 @@ struct Rule {
     #[serde(default, deserialize_with = "present")]
     pattern: Option<Pattern>,
     #[serde(default, deserialize_with = "present")]
+    requires: Option<Pattern>,
+    #[serde(default, deserialize_with = "present")]
     selector: Option<Selector>,
     #[serde(default, deserialize_with = "present")]
     provenance: Option<Provenance>,
@@ -116,6 +118,12 @@ pub enum Matcher {
     Regex(Regex),
     ForbiddenPath,
     Syntax(SyntaxMatcher),
+    /// A text rule with `requires`: the trigger's matches are findings only
+    /// when the requirement matches nowhere in the same file.
+    Requires {
+        trigger: Box<Matcher>,
+        requirement: Box<Matcher>,
+    },
 }
 
 pub(crate) fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
@@ -145,8 +153,8 @@ pub fn valid_rule_id(id: &str) -> bool {
         })
 }
 
-/// `sha256:` over the canonical JSON of a rule's `kind`, `pattern` and
-/// `selector`, which decide what matches inside one file. The ID, scope,
+/// `sha256:` over the canonical JSON of a rule's `kind`, `pattern`,
+/// `requires` and `selector`, which decide what matches inside one file. The ID, scope,
 /// remediation, provenance and fixtures are left out: none of them changes the
 /// count in a file that stays in scope, and a file that enters the scope has
 /// no baseline allowance. The `counting` version changes whenever Rulecheck's
@@ -154,7 +162,7 @@ pub fn valid_rule_id(id: &str) -> bool {
 fn matcher_digest(rule: &Value) -> String {
     let mut semantics = serde_json::Map::new();
     semantics.insert("counting".into(), Value::from(1));
-    for key in ["kind", "pattern", "selector"] {
+    for key in ["kind", "pattern", "requires", "selector"] {
         if let Some(value) = rule.get(key) {
             semantics.insert(key.into(), value.clone());
         }
@@ -277,8 +285,23 @@ impl Rule {
             Some(_) => return Err("provide 1 to 16 exclude globs or omit exclude".into()),
         };
 
+        if self.requires.is_some() && !matches!(self.kind, Kind::Text) {
+            return Err(
+                "only text rules take requires; it names text that must appear in the same file"
+                    .into(),
+            );
+        }
         let matcher = match (self.kind, self.pattern, self.selector) {
-            (Kind::Text, Some(pattern), None) => Matcher::compile(pattern)?,
+            (Kind::Text, Some(pattern), None) => {
+                let trigger = Matcher::compile(pattern)?;
+                match self.requires {
+                    None => trigger,
+                    Some(requires) => Matcher::Requires {
+                        trigger: Box::new(trigger),
+                        requirement: Box::new(Matcher::requirement(requires)?),
+                    },
+                }
+            }
             (Kind::ForbiddenPath, None, None) => Matcher::ForbiddenPath,
             (Kind::Syntax, None, Some(selector)) => Matcher::Syntax(selector.compile()?),
             _ => {
@@ -399,6 +422,32 @@ impl Matcher {
         }
     }
 
+    /// A `requires` pattern. One that can match empty text would be met by
+    /// every file, so the rule could never report and is refused.
+    fn requirement(pattern: Pattern) -> Result<Self> {
+        let matcher = Self::compile(pattern).map_err(|err| format!("requires: {err}"))?;
+        if let Self::Regex(regex) = &matcher
+            && regex.is_match("")
+        {
+            return Err(
+                "requires: the regex can match empty text, so every file would meet the \
+                 requirement and the rule could never report; match at least one character"
+                    .into(),
+            );
+        }
+        Ok(matcher)
+    }
+
+    /// Whether the text contains any match. Only text matchers are used as
+    /// requirements.
+    fn is_met(&self, content: &str) -> bool {
+        match self {
+            Self::Literal(value) => content.contains(value.as_str()),
+            Self::Regex(regex) => regex.is_match(content),
+            _ => unreachable!("requirements are literal or regex patterns"),
+        }
+    }
+
     pub fn needs_text(&self) -> bool {
         !matches!(self, Self::ForbiddenPath)
     }
@@ -430,6 +479,15 @@ impl Matcher {
             }),
             Self::Syntax(selector) => selector.find(path, content)?,
             Self::ForbiddenPath => return Ok(Some((Location { line: 1, column: 1 }, None))),
+            Self::Requires {
+                trigger,
+                requirement,
+            } => {
+                // The requirement is searched only once the trigger matched.
+                return Ok(trigger
+                    .find(path, Some(content))?
+                    .filter(|_| !requirement.is_met(content)));
+            }
         };
         Ok(span.map(|span| (locate(content, span.start), Some(span))))
     }
@@ -442,6 +500,7 @@ impl Matcher {
                  match would undercount",
             ),
             Self::ForbiddenPath => Some("forbidden-path rules report at most one finding per path"),
+            Self::Requires { trigger, .. } => trigger.all_matches_unsupported(),
             Self::Literal(_) | Self::Regex(_) => None,
         }
     }
@@ -451,7 +510,9 @@ impl Matcher {
     /// at the end of each match. Regex matches follow `Regex::find_iter`:
     /// leftmost-first and non-overlapping, empty matches included, except an
     /// empty match that starts where the previous match ended. A forbidden
-    /// path is one finding. Syntax rules are rejected before a scan starts.
+    /// path is one finding. With `requires`, every trigger match is a finding
+    /// when the requirement matches nowhere in the file, and none is when it
+    /// does. Syntax rules are rejected before a scan starts.
     pub fn find_all(
         &self,
         path: &str,
@@ -475,6 +536,19 @@ impl Matcher {
                     end: found.end(),
                 })
                 .collect(),
+            (
+                Self::Requires {
+                    trigger,
+                    requirement,
+                },
+                Some(text),
+            ) => {
+                let found = trigger.find_all(path, content, limit)?;
+                return Ok(match found.is_empty() || requirement.is_met(text) {
+                    true => Vec::new(),
+                    false => found,
+                });
+            }
             (Self::Syntax(_), _) => {
                 return Err(self.all_matches_unsupported().unwrap_or_default().into());
             }
