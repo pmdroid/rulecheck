@@ -1,4 +1,5 @@
 use crate::dialect;
+use crate::message::Template;
 use crate::syntax::{Selector, SyntaxMatcher, Trees};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use regex::Regex;
@@ -72,6 +73,8 @@ struct Rule {
     #[serde(default, rename = "skipIfContent", deserialize_with = "present")]
     skip_if_content: Option<SkipIfContent>,
     remediation: String,
+    #[serde(default, deserialize_with = "present")]
+    message: Option<String>,
     #[serde(default, deserialize_with = "present")]
     pattern: Option<Pattern>,
     #[serde(default, deserialize_with = "present")]
@@ -165,6 +168,9 @@ pub struct Span {
 pub struct CompiledRule {
     pub id: String,
     pub remediation: String,
+    /// Optional per-finding detail rendered from the regex's named captures.
+    /// The fixed `remediation` is always reported beside it.
+    pub message: Option<Template>,
     pub scope: GlobSet,
     pub exclude: GlobSet,
     /// Forbidden-path rules only: globs for files that must exist for an
@@ -460,6 +466,18 @@ impl Rule {
             Some(skip) => Some(ContentSkip::compile(skip)?),
         };
 
+        let message = match (self.message, &matcher) {
+            (None, _) => None,
+            (Some(template), Matcher::Regex(regex)) => Some(Template::parse(&template, regex)?),
+            (Some(_), _) => {
+                return Err(
+                    "message requires a regex text pattern, whose named groups it references; \
+                     drop message to report only the fixed remediation"
+                        .into(),
+                );
+            }
+        };
+
         if !(1..=64).contains(&self.fixtures.len()) {
             return Err("provide 1 to 64 fixtures".into());
         }
@@ -520,6 +538,7 @@ impl Rule {
         Ok(CompiledRule {
             id: self.id,
             remediation: self.remediation,
+            message,
             matcher,
             matcher_digest: String::new(),
             scope,
@@ -947,5 +966,22 @@ impl CompiledRule {
     /// never skipped: the scan still cannot judge it.
     pub fn skips(&self, content: Option<&str>) -> bool {
         matches!((&self.skip, content), (Some(skip), Some(content)) if skip.skips(content))
+    }
+
+    /// The rendered message of the match at `span`, or `None` when the rule
+    /// has no message template. The regex runs again from the match start, so
+    /// its captures are those of the reported match.
+    pub fn message(&self, content: Option<&str>, span: Option<Span>) -> Option<String> {
+        let template = self.message.as_ref()?;
+        let captures = match (&self.matcher, content, span) {
+            (Matcher::Regex(regex), Some(content), Some(span)) => {
+                regex.captures_at(content, span.start).filter(|found| {
+                    let whole = found.get(0).expect("group 0 is the whole match");
+                    (whole.start(), whole.end()) == (span.start, span.end)
+                })
+            }
+            _ => None,
+        };
+        Some(template.render(captures.as_ref()))
     }
 }

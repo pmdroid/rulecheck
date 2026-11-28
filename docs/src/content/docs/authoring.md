@@ -4,7 +4,7 @@ description: Define, test, and retire a rule safely.
 ---
 
 1. Copy a tested rule from the Rule cookbook into `.rulecheck/rules/`. Nested directories work. Files must end in `.rule.ts`.
-2. Choose a stable lowercase ID such as `config/no-debug-true`, repository-relative `paths` globs, an optional `exclude` list or [`excludeSets`](#reusable-exclusion-sets-and-content-skips) for files to leave out, and a concrete remediation. A forbidden-path rule for a path inside a directory that could move should also list [`anchors`](../cookbook/#forbidden-path-with-an-anchor), so the rule exits 2 instead of passing when the directory disappears. Optionally link the review finding that led to the rule with [`provenance`](#record-where-a-rule-came-from).
+2. Choose a stable lowercase ID such as `config/no-debug-true`, repository-relative `paths` globs, an optional `exclude` list or [`excludeSets`](#reusable-exclusion-sets-and-content-skips) for files to leave out, and a concrete remediation. A forbidden-path rule for a path inside a directory that could move should also list [`anchors`](../cookbook/#forbidden-path-with-an-anchor), so the rule exits 2 instead of passing when the directory disappears. Optionally link the review finding that led to the rule with [`provenance`](#record-where-a-rule-came-from), and give a regex rule a [per-finding `message`](#per-finding-messages).
 3. Add at least one fixture that finds the bug and one that passes. `expect` takes the first finding's exact one-based line and column; `null` means no finding. A text fixture can use `expectAll: [{ line, column }, ...]` instead, to assert every match that `check --all-matches` reports, in ascending order ([example](../cookbook/#count-every-match)). Add a fixture outside the scope if the scope matters.
    Fixtures are virtual: `rulecheck test` checks each fixture's `content` as if it lived at its `path`, without reading the working tree or the Git index. The fixture `path` is matched against the rule's `paths`, so a fixture at an out-of-scope path with `expect: null` proves the scope excludes it.
 4. Type-check against the SDK, validate the built policy, and run the fixtures. Inspect findings in a representative checkout before making a rule authoritative.
@@ -123,6 +123,40 @@ skipIfContent: { kind: "regex", value: "^// @generated", firstBytes: 64 },
 - A skipped file counts as out of scope. A text rule whose every in-scope file is skipped has an empty scope, and the check exits 2.
 
 Policies without `excludeSets`, `skipIfContent` or set files build exactly as before. Releases from before these fields reject them as unknown (exit 2). Before you use them, make sure every evaluator that checks the repository supports them, including the trusted base tools in CI.
+
+## Per-finding messages
+
+A regex text rule can add a `message` template that tells each finding what it matched. The template is plain text with `{name}` references to the pattern's named groups:
+
+```ts
+export default defineRule({
+  id: "config/no-legacy-settings",
+  kind: "text",
+  paths: ["config/*.toml"],
+  pattern: { kind: "regex", value: "(?m)^(?<key>legacy_[a-z_]+) = (?<value>[^\\n]*)" },
+  message: "{key} is set to {value}.",
+  remediation: "Remove legacy_* settings; the defaults replace them.",
+  // ...
+});
+```
+
+A finding on `legacy_port = 8080` reads `legacy_port is set to 8080. Remove legacy_* settings; the defaults replace them.` The fixed `remediation` is always reported too, so the message carries the detail and the remediation says what to do. Write the message as a sentence. Human output prints it, a space, then the remediation.
+
+The rules for a template:
+
+- Only `kind: "text"` rules with a `regex` pattern can have one. A literal pattern has no groups to reference, so the builder and the evaluator reject `message` on literal, forbidden-path and syntax rules.
+- A reference is `{name}`, where the name starts with a letter or underscore and continues with letters, digits or underscores. Every reference must name a group of the pattern, written `(?<name>...)` or `(?P<name>...)`. Numbered references such as `{1}` are not supported. Write `{{` or `}}` for a literal brace.
+- A template is a single line of at most 512 bytes, with no control characters, and references 1 to 16 groups.
+- The evaluator checks every reference when the policy loads and exits 2 with the rule ID on an unknown name, an unclosed `{` or a stray `}`.
+
+How a message renders:
+
+- Each reference is replaced by the text its group captured in that match. A group that did not take part in the match, such as an optional `(?<note> #old)?`, renders as empty text, the same as a group that matched nothing.
+- Control characters in captured text (newlines, tabs, carriage returns, terminal escapes, DEL and C1) and the invisible Unicode format characters that reorder or hide text (bidirectional controls, zero-width characters, the BOM) are written as `\n`, `\r`, `\t` or `\u{hex}`. A finding stays one line and shows what is really in the file.
+- Each captured value keeps at most 64 characters after escaping and ends with `…` when cut, without splitting an escape. The whole message is cut to 1024 bytes the same way.
+- Rendering is a plain copy. Captured text that looks like a reference, `$1`, or regex syntax stays literal text, and neither the template nor the captured text is evaluated or compiled as a regex.
+
+`message` does not change what matches. Fixtures, `expectAll` and the baseline matcher digest are the same with or without it. Rules without `message` produce exactly the output they did before. Rulecheck releases from before `message` reject a policy that uses it as an unknown field (exit 2), so update every evaluator that checks the repository, including the trusted base tools in CI, before you add one.
 
 ## Syntax rules
 

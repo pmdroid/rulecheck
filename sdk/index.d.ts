@@ -83,6 +83,13 @@ export type Rule = RuleFields & (
        */
       requires?: { kind: "literal" | "regex"; value: string };
       skipIfContent?: SkipIfContent;
+      /**
+       * Optional per-finding detail for a regex pattern: plain text with `{name}` references to
+       * the pattern's named groups, such as `"{key} is set to {value}"`, and `{{` or `}}` for a
+       * literal brace. Every reference must name a group. Findings report the rendered text in
+       * `message` beside the fixed `remediation`; captured text is never evaluated.
+       */
+      message?: string;
       fixtures: readonly TextFixture[];
     }
   | {
