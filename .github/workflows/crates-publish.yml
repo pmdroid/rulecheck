@@ -1,0 +1,77 @@
+name: Publish Rust crate
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rulecheck-crates-publish
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: >-
+      github.repository == 'pmdroid/rulecheck' &&
+      startsWith(github.ref, 'refs/tags/rust-v') &&
+      !github.event.release.prerelease
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify release commit
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^rust-v(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Expected a stable Rust tag, such as rust-v0.1.1."
+            exit 1
+          fi
+          if [[ "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" != "$(git rev-parse HEAD)" ]]; then
+            echo "::error::The release tag does not resolve to the event commit."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor HEAD refs/remotes/origin/main; then
+            echo "::error::The Rust release commit must be on main."
+            exit 1
+          fi
+          python3 - <<'PY'
+          import os
+          import tomllib
+
+          with open("Cargo.toml", "rb") as manifest:
+              package = tomllib.load(manifest)["package"]
+          if package["name"] != "rulecheck" or os.environ["RELEASE_TAG"] != f'rust-v{package["version"]}':
+              raise SystemExit("::error::The release tag must match the rulecheck version in Cargo.toml.")
+          PY
+      - run: rustup toolchain install 1.97.1 --profile minimal
+      - run: cargo +1.97.1 publish --registry crates-io --dry-run --locked
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - run: rustup toolchain install 1.97.1 --profile minimal
+      - name: Get short-lived crates.io token
+        id: auth
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+      - name: Publish verified commit to crates.io
+        # The separate verify job already built the same immutable commit without publish credentials.
+        run: cargo +1.97.1 publish --registry crates-io --locked --no-verify
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
