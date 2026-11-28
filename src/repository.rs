@@ -183,7 +183,9 @@ fn scan<'a, 'p>(
         // they cost no text budget and are checked after a budget stop too.
         let mut mark_anchors = |present: bool| {
             if present {
-                anchoring.iter().for_each(|(index, _)| anchored[*index] = true);
+                anchoring
+                    .iter()
+                    .for_each(|(index, _)| anchored[*index] = true);
             }
         };
         let mut applicable = rules

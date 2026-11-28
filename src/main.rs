@@ -406,7 +406,9 @@ fn check(options: &Options) -> Result<u8> {
         let Some(last) = reasons.pop() else {
             return Ok(u8::from(!shown.is_empty() || tightened));
         };
-        reasons.iter().for_each(|reason| eprintln!("rulecheck: {reason}"));
+        reasons
+            .iter()
+            .for_each(|reason| eprintln!("rulecheck: {reason}"));
         return Err(last);
     }
 
