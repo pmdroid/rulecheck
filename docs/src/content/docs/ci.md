@@ -7,6 +7,8 @@ The [Rulecheck shadow workflow](https://github.com/pmdroid/rulecheck/blob/main/.
 
 The `rulecheck-evidence` artifact records the base and candidate SHAs, tool versions, effective policy digests, phase results, and changed rule IDs. A broken rule or evaluator error is different from a finding.
 
+When the base commit has a `.rulecheck/baseline.json`, `base-check` uses that baseline and `proposed-check` uses the candidate's baseline with `--strict-baseline`. A pull request can't raise its own allowance, and a clean-up must ship a tightened baseline. Raising an allowance takes a pull request that changes only the baseline and has exact-head owner approval. See [Baselines in exact-commit CI](../baselines/#in-exact-commit-ci).
+
 Policy changes require exact-head owner approval for the shadow review phase. Rerun after approval to refresh the receipt. A new head needs a new receipt.
 
 The `Rust CI` workflow's `reproduce` job builds the tools from a fresh checkout with the same pinned Node.js and Rust versions. It then builds and checks the commit twice with `tools/reproduce.mjs`, and its `rulecheck-reproduction` artifact records whether policy bytes and results matched, with wall time per step. It does not replace the shadow evidence.
