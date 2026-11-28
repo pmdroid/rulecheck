@@ -70,7 +70,8 @@ test("README demo prints what its comments say with the installed CLI", { skip: 
     if (comment) expected.push(comment[1]);
   }
   assert.ok(expected.length >= 6, "README demo lost its expected-output comments");
-  const result = bash(`${script} 2>&1`, dir, env);
+  // Send the whole script's stderr to stdout, so builder errors appear in order.
+  const result = bash(`exec 2>&1\n${script}`, dir, env);
   assert.equal(result.status, 0, result.stdout);
   const actual = result.stdout.split("\n").filter((line, i, all) => i < all.length - 1);
   // The last line is the directory `cd -` prints.
