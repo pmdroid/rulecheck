@@ -1,0 +1,135 @@
+name: Release archives
+
+# Builds the native CLI archives, smoke-tests each one on a runner with the Rust
+# toolchain removed, and writes SHA256SUMS. Rust CI calls this on every change;
+# release-binaries.yml calls it for a published release before uploading.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag recorded in PROVENANCE.json; empty for unreleased CI builds.
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          # Keep in step with TARGETS in tools/release-archive.mjs.
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.22.3'
+          package-manager-cache: false
+      - run: rustup toolchain install 1.97.1 --profile minimal --target ${{ matrix.target }}
+      - run: cargo +1.97.1 build --locked --release --target ${{ matrix.target }}
+      - name: Package archive
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          node tools/release-archive.mjs pack \
+            --target "$TARGET" \
+            --bin-dir "target/$TARGET/release" \
+            --out dist \
+            --commit "$(git rev-parse HEAD)" \
+            --tag "$RELEASE_TAG" \
+            --source-date-epoch "$(git log -1 --format=%ct)" \
+            --rustc "$(rustc +1.97.1 --version)"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rulecheck-archive-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  smoke:
+    needs: build
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      # Only the smoke test is read from the checkout; nothing is built here.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.22.3'
+          package-manager-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rulecheck-archive-${{ matrix.target }}
+          path: ${{ runner.temp }}/download
+      - name: Verify and run the archive without a Rust toolchain
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          # Hide rustup's toolchains so only the archived binaries can run.
+          for dir in "$HOME/.cargo" "$HOME/.rustup"; do
+            if [[ -e "$dir" ]]; then mv "$dir" "$dir-hidden"; fi
+          done
+          PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -v -e '/\.cargo/' -e 'rustup' | paste -sd: -)
+          export PATH
+          if command -v cargo || command -v rustc; then
+            echo "::error::A Rust toolchain is still on PATH."
+            exit 1
+          fi
+          cd "$RUNNER_TEMP/download"
+          if command -v sha256sum >/dev/null; then sha256sum -c ./*.sha256; else shasum -a 256 -c ./*.sha256; fi
+          mkdir "$RUNNER_TEMP/install"
+          tar -xzf ./*.tar.gz -C "$RUNNER_TEMP/install"
+          root=$(echo "$RUNNER_TEMP"/install/rulecheck-*-"$TARGET")
+          node -e '
+            const p = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            if (p.commit !== process.argv[2] || p.target !== process.argv[3]) {
+              console.error("::error::PROVENANCE.json does not match this commit and target");
+              process.exit(1);
+            }' "$root/PROVENANCE.json" "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" "$TARGET"
+          cd "$GITHUB_WORKSPACE"
+          RULECHECK_INSTALLED_BIN="$root/bin/rulecheck" node --test tests/installed-cli.test.mjs
+
+  manifest:
+    needs: smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.22.3'
+          package-manager-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: rulecheck-archive-*
+          merge-multiple: true
+          path: dist
+      - run: node tools/release-archive.mjs manifest --out dist --complete true
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rulecheck-release-archives
+          path: dist/
+          if-no-files-found: error
