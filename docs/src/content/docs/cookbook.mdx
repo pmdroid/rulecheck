@@ -15,9 +15,11 @@ import pathGlobs from '../../../examples/rules/path-globs.rule.ts?raw';
 import syntax from '../../../examples/rules/syntax.rule.ts?raw';
 import syntaxReuse from '../../../examples/rules/syntax-reuse.rule.ts?raw';
 import syntaxRust from '../../../examples/rules/syntax-rust.rule.ts?raw';
+import syntaxGo from '../../../examples/rules/syntax-go.rule.ts?raw';
+import syntaxPython from '../../../examples/rules/syntax-python.rule.ts?raw';
 import allMatches from '../../../examples/rules/all-matches.rule.ts?raw';
 
-Rulecheck supports four matcher forms: **literal text**, **regex text**, **forbidden path**, and **syntax**. The first three recipes show the text and path forms, the middle recipes show how to control where a rule applies, and the [syntax recipes](#comments-in-function-bodies) select TypeScript, TSX and Rust syntax nodes. The code below comes from the same TypeScript files that CI runs. Copy a recipe into `.rulecheck/rules/` and adapt its ID, paths, and fixtures.
+Rulecheck supports four matcher forms: **literal text**, **regex text**, **forbidden path**, and **syntax**. The first three recipes show the text and path forms, the middle recipes show how to control where a rule applies, and the [syntax recipes](#comments-in-function-bodies) select TypeScript, TSX, Rust, Go and Python syntax nodes. The code below comes from the same TypeScript files that CI runs. Copy a recipe into `.rulecheck/rules/` and adapt its ID, paths, and fixtures.
 
 From your project's Git checkout root, run the installed CLI after copying and adapting a rule:
 
@@ -152,4 +154,32 @@ The runner checks a clean `src/lib.rs` first. It has crate and item docs, a `TOD
 
 ```text
 src/lib.rs:2:5: [source/no-rust-function-body-comments] Move the explanation out of the function body or into a name.
+```
+
+## Comments in Go function bodies
+
+With `language: "go"`, the selector parses `.go` files. This rule reports a comment anywhere inside the body of a function, a method or a function literal, including nested blocks and goroutine closures. A comment in a parameter list or a result type isn't in a body, so it passes, and so do package and doc comments. `//` or `/*` inside an interpreted string, a raw backtick string or a rune isn't a comment node. The `ignore` filters keep `//go:` and `//nolint` directives and `TODO` and `FIXME` notes. `exclude` leaves out `vendor/`.
+
+<Code code={syntaxGo} lang="ts" title="syntax-go.rule.ts" />
+
+The Go grammar has a single `comment` kind for `//` and `/* */`, so one rule covers both, as the first two fixtures show.
+
+The runner checks a clean `report/total.go` first. It has package and doc comments, `"// none"` in a string, a `TODO` and a vendored file with a comment. Then it adds a comment inside `Total` and expects:
+
+```text
+report/total.go:4:2: [source/no-go-function-body-comments] Move the explanation out of the function body or into a name.
+```
+
+## Comments in Python functions
+
+With `language: "python"`, the selector parses `.py` and `.pyi` files. This rule reports a `#` comment anywhere inside a function definition, including nested blocks and methods. Module and class-level comments, decorator-line comments and the shebang pass. `#` inside a string, an f-string or a docstring isn't a comment node. The `ignore` filters keep `# noqa`, `# type:`, `# pragma:`, `# pyright:` and `# mypy:` directives and `TODO` and `FIXME` notes.
+
+<Code code={syntaxPython} lang="ts" title="syntax-python.rule.ts" />
+
+The Python grammar attaches a comment that comes before a function's first statement to the `function_definition` node, not to its `body` block. With `field: "body"`, a selector would miss the comment in the first fixture, so this rule names only the kind. That means a comment in the parameter list or on the `def` line counts too, as the fifth fixture shows. A comment before the first statement of a nested `if` or `for` belongs to that statement, so it is still inside the function.
+
+The runner checks a clean `src/app/total.py` first. It has a module comment, a docstring and a string with `#`, a `TODO` and a `# type: ignore`. Then it adds a comment as the first line of `total` and expects:
+
+```text
+src/app/total.py:2:5: [source/no-python-function-comments] Move the explanation into a docstring or a name.
 ```
