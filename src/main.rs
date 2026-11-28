@@ -3,6 +3,7 @@ mod dialect;
 mod message;
 mod policy;
 mod repository;
+mod structured;
 mod syntax;
 
 use baseline::Comparison;

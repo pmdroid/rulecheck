@@ -519,7 +519,8 @@ fn schema_sdk_and_evaluator_accept_the_same_rule_fields() {
             "remediation",
             "requires",
             "selector",
-            "skipIfContent"
+            "skipIfContent",
+            "structure"
         ]
     );
     assert_eq!(
@@ -559,6 +560,9 @@ fn schema_sdk_and_evaluator_accept_the_same_rule_fields() {
         "kind: \"forbidden-path\";",
         "kind: \"syntax\";",
         "selector: Selector;",
+        "kind: \"structured\";",
+        "structure: Structure;",
+        "format: \"yaml\";",
         "pattern: { kind: \"literal\" | \"regex\"; value: string };",
         "requires?: { kind: \"literal\" | \"regex\"; value: string };",
         "path: string; content: string; expect: Location | null",

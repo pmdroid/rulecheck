@@ -21,6 +21,8 @@ path = "src/main.rs"
 
 [dependencies]
 globset = "0.4"
+# Pinned exactly: a parser change can move structured findings.
+saphyr-parser = "=0.4.1"
 regex = "1"
 # Parses patterns to explain JavaScript-only constructs; matching stays in regex.
 regex-syntax = "0.8"

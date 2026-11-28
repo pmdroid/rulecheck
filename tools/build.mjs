@@ -241,10 +241,10 @@ function checkShape(rule, fail, setNames) {
 
   if (!isObject(rule)) fail(undefined, undefined, "The rule must be an object", "Pass an object literal to defineRule.");
   fields(rule, "the rule", ["id", "kind", "paths", "exclude", "excludeSets", "skipIfContent", "anchors", "remediation", "message", "pattern",
-    "requires", "selector", "provenance", "fixtures"], ["id", "kind", "paths", "remediation", "fixtures"]);
+    "requires", "selector", "structure", "provenance", "fixtures"], ["id", "kind", "paths", "remediation", "fixtures"]);
   expect(rule, "id", "rule", (value) => typeof value === "string", "a string");
-  expect(rule, "kind", "rule", (value) => ["text", "forbidden-path", "syntax"].includes(value),
-    '"text", "forbidden-path" or "syntax"');
+  expect(rule, "kind", "rule", (value) => ["text", "forbidden-path", "syntax", "structured"].includes(value),
+    '"text", "forbidden-path", "syntax" or "structured"');
   expect(rule, "paths", "rule", isStrings, "an array of glob strings");
   expect(rule, "exclude", "rule", isStrings, "an array of glob strings");
   expect(rule, "anchors", "rule", isStrings, "an array of glob strings");
@@ -280,16 +280,50 @@ function checkShape(rule, fail, setNames) {
     expect(rule.provenance, "finding", "provenance", isFindingUrl, "an https:// URL of at most 2048 characters");
   }
   const syntax = rule.kind === "syntax";
-  const text = rule.kind === "text" || syntax;
+  const structured = rule.kind === "structured";
+  const text = rule.kind === "text" || syntax || structured;
   if (rule.kind === "text" && !Object.hasOwn(rule, "pattern")) {
     fail(rule, undefined, "Text rules require a pattern", 'Add pattern: { kind: "literal", value: "..." }.');
   }
   if (rule.kind !== "text" && Object.hasOwn(rule, "pattern")) {
-    fail(rule, "pattern", `${syntax ? "Syntax" : "Forbidden-path"} rules have no pattern`,
-      syntax ? "Use selector instead of pattern." : "Remove pattern.");
+    fail(rule, "pattern", `${syntax ? "Syntax" : structured ? "Structured" : "Forbidden-path"} rules have no pattern`,
+      syntax ? "Use selector instead of pattern." : structured ? "Use structure instead of pattern." : "Remove pattern.");
+  }
+  if (structured && !Object.hasOwn(rule, "structure")) {
+    fail(rule, undefined, "Structured rules require a structure",
+      'Add structure: { format: "yaml", path: [{ key: "..." }], assert: { kind: "present" } }.');
+  }
+  if (!structured && Object.hasOwn(rule, "structure")) {
+    fail(rule, "structure", "Only structured rules have a structure", 'Remove structure or use kind: "structured".');
+  }
+  if (structured) {
+    expect(rule, "structure", "rule", isObject, "a structure object");
+    const structure = rule.structure;
+    fields(structure, "the structure", ["format", "path", "assert"], ["format", "path", "assert"]);
+    expect(structure, "format", "structure", (value) => value === "yaml", '"yaml"');
+    expect(structure, "path", "structure", (value) => Array.isArray(value), "an array of path segments");
+    for (const [index, segment] of structure.path.entries()) {
+      const label = `structure path ${index + 1}`;
+      if (!isObject(segment) || Object.keys(segment).length !== 1) {
+        fail(structure.path, index, `${label} must be an object with exactly one of key, index or each`,
+          'Write { key: "jobs" }, { index: 0 } or { each: "mapping" }.');
+      }
+      fields(segment, label, ["key", "index", "each"], []);
+      expect(segment, "key", label, (value) => typeof value === "string", "a string");
+      expect(segment, "index", label, (value) => Number.isInteger(value) && value >= 0, "a zero-based integer");
+      expect(segment, "each", label, (value) => ["mapping", "sequence"].includes(value), '"mapping" or "sequence"');
+    }
+    expect(structure, "assert", "structure", isObject, "an assertion object");
+    const assert = structure.assert;
+    const kinds = { present: [], absent: [], equals: ["value"], "not-equals": ["value"], "has-key": ["key"] };
+    expect(assert, "kind", "structure assert", (value) => Object.hasOwn(kinds, value),
+      '"present", "absent", "equals", "not-equals" or "has-key"');
+    fields(assert, "the structure assert", ["kind", ...(kinds[assert.kind] ?? [])], ["kind", ...(kinds[assert.kind] ?? [])]);
+    expect(assert, "value", "structure assert", (value) => typeof value === "string", "a string");
+    expect(assert, "key", "structure assert", (value) => typeof value === "string", "a string");
   }
   if (rule.kind !== "text" && Object.hasOwn(rule, "requires")) {
-    fail(rule, "requires", `${syntax ? "Syntax" : "Forbidden-path"} rules have no requires`,
+    fail(rule, "requires", `${syntax ? "Syntax" : structured ? "Structured" : "Forbidden-path"} rules have no requires`,
       'Remove requires or use kind: "text".');
   }
   if (syntax && !Object.hasOwn(rule, "selector")) {
@@ -357,7 +391,7 @@ function checkShape(rule, fail, setNames) {
     };
     if (all) {
       // Mirrors Matcher::all_matches_unsupported in src/policy.rs.
-      if (rule.kind !== "text") {
+      if (rule.kind !== "text" && !structured) {
         fail(fixture, "expectAll", syntax
           ? `${label} uses expectAll, but syntax rules do not count matching nodes yet`
           : `${label} uses expectAll, but forbidden-path rules report at most one finding per path`, "Use expect.");

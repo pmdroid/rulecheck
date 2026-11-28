@@ -1,5 +1,6 @@
 use crate::dialect;
 use crate::message::Template;
+use crate::structured::{Structure, StructuredMatcher};
 use crate::syntax::{Selector, SyntaxMatcher, Trees};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use regex::Regex;
@@ -82,6 +83,8 @@ struct Rule {
     #[serde(default, deserialize_with = "present")]
     selector: Option<Selector>,
     #[serde(default, deserialize_with = "present")]
+    structure: Option<Structure>,
+    #[serde(default, deserialize_with = "present")]
     provenance: Option<Provenance>,
     fixtures: Vec<FixtureSource>,
 }
@@ -118,6 +121,7 @@ enum Kind {
     Text,
     ForbiddenPath,
     Syntax,
+    Structured,
 }
 
 #[derive(Deserialize)]
@@ -205,6 +209,7 @@ pub enum Matcher {
         trigger: Box<Matcher>,
         requirement: Box<Matcher>,
     },
+    Structured(StructuredMatcher),
 }
 
 pub(crate) fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
@@ -235,7 +240,7 @@ pub fn valid_rule_id(id: &str) -> bool {
 }
 
 /// `sha256:` over the canonical JSON of a rule's `kind`, `pattern`,
-/// `requires` and `selector`, which decide what matches inside one file. The ID, scope
+/// `requires`, `selector` and `structure`, which decide what matches inside one file. The ID, scope
 /// (including `excludeSets` and `skipIfContent`, which only take whole files out),
 /// remediation, provenance and fixtures are left out: none of them changes the
 /// count in a file that stays in scope, and a file that enters the scope has
@@ -244,7 +249,7 @@ pub fn valid_rule_id(id: &str) -> bool {
 fn matcher_digest(rule: &Value) -> String {
     let mut semantics = serde_json::Map::new();
     semantics.insert("counting".into(), Value::from(1));
-    for key in ["kind", "pattern", "requires", "selector"] {
+    for key in ["kind", "pattern", "requires", "selector", "structure"] {
         if let Some(value) = rule.get(key) {
             semantics.insert(key.into(), value.clone());
         }
@@ -404,7 +409,7 @@ impl Rule {
         let exclude = globs("exclude", &excluded)?;
         let anchors = match (&self.anchors, self.kind) {
             (None, _) => None,
-            (Some(_), Kind::Text | Kind::Syntax) => {
+            (Some(_), Kind::Text | Kind::Syntax | Kind::Structured) => {
                 return Err(
                     "anchors apply to forbidden-path rules only; text and syntax rules \
                      already exit 2 when no file is in scope"
@@ -425,8 +430,9 @@ impl Rule {
                     .into(),
             );
         }
-        let (matcher, dialect_note) = match (self.kind, self.pattern, self.selector) {
-            (Kind::Text, Some(pattern), None) => {
+        let (matcher, dialect_note) = match (self.kind, self.pattern, self.selector, self.structure)
+        {
+            (Kind::Text, Some(pattern), None, None) => {
                 let (trigger, note) = Matcher::compile(pattern)?;
                 match self.requires {
                     None => (trigger, note),
@@ -440,16 +446,19 @@ impl Rule {
                     }
                 }
             }
-            (Kind::ForbiddenPath, None, None) => (Matcher::ForbiddenPath, None),
-            (Kind::Syntax, None, Some(selector)) => {
+            (Kind::ForbiddenPath, None, None, None) => (Matcher::ForbiddenPath, None),
+            (Kind::Syntax, None, Some(selector), None) => {
                 let selector = selector.compile()?;
                 let note = selector.dialect_note().map(str::to_owned);
                 (Matcher::Syntax(selector), note)
             }
+            (Kind::Structured, None, None, Some(structure)) => {
+                (Matcher::Structured(structure.compile()?), None)
+            }
             _ => {
                 return Err(
                     "text rules require a pattern, syntax rules require a selector, \
-                     forbidden-path rules omit both"
+                     structured rules require a structure, forbidden-path rules omit all three"
                         .into(),
                 );
             }
@@ -459,7 +468,7 @@ impl Rule {
             None => None,
             Some(_) if !matcher.needs_text() => {
                 return Err(
-                    "skipIfContent needs a text or syntax rule; forbidden-path rules never read content"
+                    "skipIfContent needs a text, syntax or structured rule; forbidden-path rules never read content"
                         .into(),
                 );
             }
@@ -833,6 +842,7 @@ impl Matcher {
                 end: found.end(),
             }),
             Self::Syntax(selector) => selector.find(path, content, trees)?,
+            Self::Structured(structure) => structure.find_all(path, content, 1)?.into_iter().next(),
             Self::ForbiddenPath => return Ok(Some((Location { line: 1, column: 1 }, None))),
             Self::Requires {
                 trigger,
@@ -856,12 +866,12 @@ impl Matcher {
             ),
             Self::ForbiddenPath => Some("forbidden-path rules report at most one finding per path"),
             Self::Requires { trigger, .. } => trigger.all_matches_unsupported(),
-            Self::Literal(_) | Self::Regex(_) => None,
+            Self::Literal(_) | Self::Regex(_) | Self::Structured(_) => None,
         }
     }
 
     /// Every match in all-match mode, in ascending byte order, stopping after
-    /// `limit` matches. Literal matches are non-overlapping: the search resumes
+    /// `limit` matches. A structured rule reports each failing node once. Literal matches are non-overlapping: the search resumes
     /// at the end of each match. Regex matches follow `Regex::find_iter`:
     /// leftmost-first and non-overlapping, empty matches included, except an
     /// empty match that starts where the previous match ended. A forbidden
@@ -903,6 +913,9 @@ impl Matcher {
                     true => Vec::new(),
                     false => found,
                 });
+            }
+            (Self::Structured(structure), Some(content)) => {
+                structure.find_all(path, content, limit)?
             }
             (Self::Syntax(_), _) => {
                 return Err(self.all_matches_unsupported().unwrap_or_default().into());

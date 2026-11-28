@@ -27,7 +27,7 @@
       "additionalProperties": false,
       "properties": {
         "id": { "type": "string", "maxLength": 128, "pattern": "^[a-z0-9-]+(/[a-z0-9-]+)*$" },
-        "kind": { "enum": ["text", "forbidden-path", "syntax"] },
+        "kind": { "enum": ["text", "forbidden-path", "syntax", "structured"] },
         "paths": {
           "type": "array",
           "minItems": 1,
@@ -55,7 +55,7 @@
           "items": { "$ref": "#/$defs/setName" }
         },
         "skipIfContent": {
-          "description": "Skips an in-scope file whose first firstBytes bytes contain a literal or match a regex. Text and syntax rules only. A file that cannot be read is never skipped.",
+          "description": "Skips an in-scope file whose first firstBytes bytes contain a literal or match a regex. Text, syntax and structured rules only. A file that cannot be read is never skipped.",
           "type": "object",
           "required": ["kind", "value", "firstBytes"],
           "additionalProperties": false,
@@ -92,6 +92,7 @@
           }
         },
         "selector": { "$ref": "#/$defs/selector" },
+        "structure": { "$ref": "#/$defs/structure" },
         "provenance": {
           "type": "object",
           "required": ["finding"],
@@ -114,30 +115,50 @@
       "if": { "properties": { "kind": { "const": "text" } } },
       "then": {
         "required": ["pattern"],
-        "not": { "required": ["selector"] },
-        "properties": { "anchors": { "not": {} }, "fixtures": { "items": { "required": ["content"] } } }
+        "properties": {
+          "selector": { "not": {} },
+          "structure": { "not": {} },
+          "anchors": { "not": {} },
+          "fixtures": { "items": { "required": ["content"] } }
+        }
       },
       "else": {
-        "if": { "properties": { "kind": { "const": "syntax" } } },
+        "if": { "properties": { "kind": { "const": "structured" } } },
         "then": {
-          "required": ["selector"],
-          "not": { "required": ["pattern"] },
+          "required": ["structure"],
           "properties": {
+            "pattern": { "not": {} },
+            "selector": { "not": {} },
             "anchors": { "not": {} },
             "requires": { "not": {} },
             "message": { "not": {} },
-            "fixtures": { "items": { "required": ["content"], "properties": { "expectAll": { "not": {} } } } }
+            "fixtures": { "items": { "required": ["content"] } }
           }
         },
         "else": {
-          "not": { "required": ["pattern"] },
-          "properties": {
-            "selector": { "not": {} },
-            "requires": { "not": {} },
-            "skipIfContent": { "not": {} },
-            "message": { "not": {} },
-            "fixtures": {
-              "items": { "not": { "required": ["content"] }, "properties": { "expectAll": { "not": {} } } }
+          "if": { "properties": { "kind": { "const": "syntax" } } },
+          "then": {
+            "required": ["selector"],
+            "properties": {
+              "pattern": { "not": {} },
+              "structure": { "not": {} },
+              "anchors": { "not": {} },
+              "requires": { "not": {} },
+              "message": { "not": {} },
+              "fixtures": { "items": { "required": ["content"], "properties": { "expectAll": { "not": {} } } } }
+            }
+          },
+          "else": {
+            "properties": {
+              "pattern": { "not": {} },
+              "selector": { "not": {} },
+              "structure": { "not": {} },
+              "requires": { "not": {} },
+              "skipIfContent": { "not": {} },
+              "message": { "not": {} },
+              "fixtures": {
+                "items": { "not": { "required": ["content"] }, "properties": { "expectAll": { "not": {} } } }
+              }
             }
           }
         }
@@ -202,6 +223,57 @@
           }
         }
       }
+    },
+    "structure": {
+      "description": "Reads .yml and .yaml files as YAML, without executing or expanding anything, and walks path in every document. present reports a document where the path selects nothing; absent, equals, not-equals and has-key report every selected node that breaks the assertion. Scalars compare by their text after unquoting. Duplicate keys, malformed input, aliases and << merge keys on the path cannot be judged.",
+      "type": "object",
+      "required": ["format", "path", "assert"],
+      "additionalProperties": false,
+      "if": { "properties": { "assert": { "properties": { "kind": { "enum": ["present", "absent"] } } } } },
+      "then": { "properties": { "path": { "minItems": 1 } } },
+      "properties": {
+        "format": { "enum": ["yaml"] },
+        "path": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/structurePathSegment" }
+        },
+        "assert": {
+          "type": "object",
+          "required": ["kind"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "enum": ["present", "absent", "equals", "not-equals", "has-key"] },
+            "value": { "type": "string", "maxLength": 1024 },
+            "key": { "type": "string", "minLength": 1, "maxLength": 1024 }
+          },
+          "oneOf": [
+            {
+              "properties": { "kind": { "enum": ["present", "absent"] }, "value": { "not": {} }, "key": { "not": {} } }
+            },
+            {
+              "required": ["value"],
+              "properties": { "kind": { "enum": ["equals", "not-equals"] }, "key": { "not": {} } }
+            },
+            {
+              "required": ["key"],
+              "properties": { "kind": { "const": "has-key" }, "value": { "not": {} } }
+            }
+          ]
+        }
+      }
+    },
+    "structurePathSegment": {
+      "description": "key selects a mapping value by its key text, index a zero-based sequence item, each every mapping value or sequence item.",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "key": { "type": "string", "maxLength": 1024 },
+        "index": { "type": "integer", "minimum": 0 },
+        "each": { "enum": ["mapping", "sequence"] }
+      },
+      "oneOf": [{ "required": ["key"] }, { "required": ["index"] }, { "required": ["each"] }]
     },
     "fixture": {
       "description": "Asserts the first match with expect (null for none), or, for text rules, every match in --all-matches order with expectAll. Use exactly one.",

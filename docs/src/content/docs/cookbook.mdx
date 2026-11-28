@@ -21,6 +21,8 @@ import syntaxReuse from '../../../examples/rules/syntax-reuse.rule.ts?raw';
 import syntaxRust from '../../../examples/rules/syntax-rust.rule.ts?raw';
 import syntaxGo from '../../../examples/rules/syntax-go.rule.ts?raw';
 import syntaxPython from '../../../examples/rules/syntax-python.rule.ts?raw';
+import structuredYaml from '../../../examples/rules/structured-yaml.rule.ts?raw';
+import structuredYamlValue from '../../../examples/rules/structured-yaml-value.rule.ts?raw';
 import allMatches from '../../../examples/rules/all-matches.rule.ts?raw';
 import requires from '../../../examples/rules/requires.rule.ts?raw';
 import regexBackreference from '../../../examples/rules/regex-backreference.rule.ts?raw';
@@ -28,7 +30,7 @@ import regexLookahead from '../../../examples/rules/regex-lookahead.rule.ts?raw'
 import regexLookbehind from '../../../examples/rules/regex-lookbehind.rule.ts?raw';
 import message from '../../../examples/rules/message.rule.ts?raw';
 
-Rulecheck supports four matcher forms: **literal text**, **regex text**, **forbidden path**, and **syntax**. The first three recipes show the text and path forms, the middle recipes show how to control where a rule applies, and the [syntax recipes](#comments-in-function-bodies) select TypeScript, TSX, Rust, Go and Python syntax nodes. The code below comes from the same TypeScript files that CI runs. Copy a recipe into `.rulecheck/rules/` and adapt its ID, paths, and fixtures.
+Rulecheck supports five matcher forms: **literal text**, **regex text**, **forbidden path**, **syntax** and **structured YAML**. The first three recipes show the text and path forms, the middle recipes show how to control where a rule applies, the [syntax recipes](#comments-in-function-bodies) select TypeScript, TSX, Rust, Go and Python syntax nodes, and the [structured recipes](#a-key-every-entry-must-declare) check keys and values in YAML files. The code below comes from the same TypeScript files that CI runs. Copy a recipe into `.rulecheck/rules/` and adapt its ID, paths, and fixtures.
 
 From your project's Git checkout root, run the installed CLI after copying and adapting a rule:
 
@@ -271,4 +273,26 @@ The runner checks a clean `src/app/total.py` first. It has a module comment, a d
 
 ```text
 src/app/total.py:2:5: [source/no-python-function-comments] Move the explanation into a docstring or a name.
+```
+
+## A key every entry must declare
+
+A `structured` rule reads YAML files and walks a `path` of keys and selections. This rule selects each job under `jobs` with `{ each: "mapping" }` and asserts `has-key`, so every job must declare `timeout-minutes`. A key in a comment or a string doesn't count, quoting the key doesn't change it, and flow style reads the same as block style. Each document of a multi-document file is checked. A workflow without `jobs` has nothing to check: pair the rule with a `present` assertion if `jobs` is required. The [structured rule reference](../authoring/#structured-yaml-rules) lists the segments, assertions and the files that cannot be judged.
+
+<Code code={structuredYaml} lang="ts" title="structured-yaml.rule.ts" />
+
+The finding points at the job's key. The runner checks a clean workflow first, where every job has a timeout and an unrelated `deploy/app.yml` has none. Then it removes the timeout from `build` and expects:
+
+```text
+.github/workflows/ci.yml:3:3: [ci/job-timeout] Add timeout-minutes to the job.
+```
+
+## A forbidden YAML value
+
+`not-equals` reports a selected scalar with the given text. This rule reports `contents: write` under the top-level `permissions`, whether the value is quoted or not. A missing `permissions` block, other keys and job-level permissions select nothing, so they pass.
+
+<Code code={structuredYamlValue} lang="ts" title="structured-yaml-value.rule.ts" />
+
+```text
+.github/workflows/release.yml:3:13: [ci/no-contents-write] Grant contents: write only to the job that needs it, or use read.
 ```

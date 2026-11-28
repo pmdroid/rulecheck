@@ -98,6 +98,15 @@ const recipes = {
     "src/poll.ts": "const id = setInterval(poll, 1000);\nexport const stop = () => clearInterval(id);\n",
   }, { "src/poll.ts": "const id = setInterval(poll, 1000);\nexport const stop = () => id;\n" },
   "src/poll.ts:1:12: [source/interval-needs-clear] Keep the interval handle and call clearInterval when the work stops."),
+  "structured-yaml": recipe({
+    ".github/workflows/ci.yml": "on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    timeout-minutes: 10\n    steps:\n      - run: make # timeout-minutes is set above\n",
+    "deploy/app.yml": "jobs:\n  build: {}\n",
+  }, { ".github/workflows/ci.yml": "on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: make\n" },
+  ".github/workflows/ci.yml:3:3: [ci/job-timeout] Add timeout-minutes to the job."),
+  "structured-yaml-value": recipe({
+    ".github/workflows/release.yml": "on: push\npermissions:\n  contents: read\njobs:\n  publish:\n    permissions:\n      contents: write\n",
+  }, { ".github/workflows/release.yml": "on: push\npermissions:\n  contents: write\n" },
+  ".github/workflows/release.yml:3:13: [ci/no-contents-write] Grant contents: write only to the job that needs it, or use read."),
 };
 
 function run(bin, args, { cwd, input, status = 0 } = {}) {
@@ -157,7 +166,7 @@ for (const [name, { clean, bad, finding, args: flags }] of Object.entries(recipe
     write(bad);
     git("add", "-f", "--", ".");
     scan({ expected: finding });
-    if (name === "all-matches") {
+    if (name === "all-matches" || name.startsWith("structured")) {
       // Without the flag the same file reports its first match only, and the
       // exact commit reports the same matches as the working tree.
       const first = run(evaluator, ["check", "--root", cwd], { input, cwd, status: 1 });

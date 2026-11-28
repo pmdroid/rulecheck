@@ -45,6 +45,40 @@ export interface GlobSet {
   include?: readonly string[];
 }
 
+/**
+ * One step of a structure path. `key` selects a mapping value by its key text, `index` a
+ * zero-based sequence item, and `each` every value of a mapping or every item of a sequence.
+ * A step that does not fit the node selects nothing.
+ */
+export type StructurePathSegment =
+  | { key: string }
+  | { index: number }
+  | { each: "mapping" | "sequence" };
+
+/**
+ * What a structured rule asserts about the nodes its path selects, in each YAML document.
+ * "present" reports a document where the path selects nothing. "absent", "equals",
+ * "not-equals" and "has-key" report every selected node that breaks the assertion, so a
+ * missing path reports nothing for them. Scalars compare by their text after unquoting.
+ */
+export type StructureAssert =
+  | { kind: "present" }
+  | { kind: "absent" }
+  | { kind: "equals"; value: string }
+  | { kind: "not-equals"; value: string }
+  | { kind: "has-key"; key: string };
+
+/**
+ * Reads .yml and .yaml files as YAML without executing or expanding anything. A file that
+ * does not parse or has a duplicate key, and a path that reaches an alias or a `<<` merge
+ * key, cannot be judged.
+ */
+export interface Structure {
+  format: "yaml";
+  path: readonly StructurePathSegment[];
+  assert: StructureAssert;
+}
+
 interface RuleFields {
   id: string;
   /** Positive, case-sensitive repository-relative globs. A file is in scope when any entry matches. */
@@ -97,6 +131,11 @@ export type Rule = RuleFields & (
       selector: Selector;
       skipIfContent?: SkipIfContent;
       fixtures: readonly { path: string; content: string; expect: Location | null }[];
+    }
+  | {
+      kind: "structured";
+      structure: Structure;
+      fixtures: readonly TextFixture[];
     }
   | {
       kind: "forbidden-path";
