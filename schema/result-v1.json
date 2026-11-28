@@ -38,7 +38,8 @@
         "mode": { "enum": ["working-tree", "commit"] },
         "commit": { "type": ["string", "null"], "pattern": "^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$" },
         "untracked": { "const": true, "description": "Present only when --untracked added non-ignored untracked files to a working-tree check." },
-        "matches": { "const": "all", "description": "Present only when --all-matches reported every text match. Absent means each rule reports at most its first match per file." }
+        "matches": { "const": "all", "description": "Present only when --all-matches reported every text match. Absent means each rule reports at most its first match per file." },
+        "textBudgetMiB": { "type": "integer", "minimum": 1, "maximum": 1024, "description": "Present only when --text-budget set the scoped-text budget. Absent means the default of 64 MiB." }
       }
     },
     "findings": {
@@ -49,9 +50,23 @@
     "diagnostics": {
       "type": "array",
       "items": { "$ref": "#/$defs/diagnostic" }
-    }
+    },
+    "partial": { "$ref": "#/$defs/partial" }
   },
   "$defs": {
+    "partial": {
+      "description": "Present only when the scan stopped at the text budget. The outcome is then error with exit code 2. findings holds the deterministic findings from the files before stoppedAt and is not a complete result: never treat a rule as passing or update a baseline from it. Rules in unevaluatedRuleIds also have a diagnostic; the other selected rules were evaluated on every file in scope.",
+      "type": "object",
+      "required": ["reason", "textBudgetBytes", "textBytesEvaluated", "stoppedAt", "unevaluatedRuleIds"],
+      "additionalProperties": false,
+      "properties": {
+        "reason": { "const": "text-budget" },
+        "textBudgetBytes": { "type": "integer", "minimum": 1048576, "maximum": 1073741824 },
+        "textBytesEvaluated": { "type": "integer", "minimum": 0 },
+        "stoppedAt": { "type": "string", "minLength": 1 },
+        "unevaluatedRuleIds": { "type": "array", "minItems": 1, "items": { "type": "string" } }
+      }
+    },
     "finding": {
       "type": "object",
       "required": ["ruleId", "path", "line", "column", "byteStart", "byteEnd", "remediation"],

@@ -3,7 +3,7 @@ mod repository;
 mod syntax;
 
 use policy::{CompiledRule, Expect, Location, Result};
-use repository::{Matches, Report};
+use repository::{DEFAULT_TEXT_BUDGET_MIB, MAX_TEXT_BUDGET_MIB, Matches, Partial, Report};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
@@ -23,12 +23,15 @@ rulecheck: deterministic repository checks
   rulecheck validate                        Validate a policy from stdin
   rulecheck list [--id-prefix PREFIX]        List policy rule IDs
   rulecheck test [--id-prefix PREFIX]        Check exact fixture expectations
-  rulecheck check [--root DIR] [--commit SHA | --untracked] [--id-prefix PREFIX] [--all-matches] [--format human|json]
+  rulecheck check [--root DIR] [--commit SHA | --untracked] [--id-prefix PREFIX] [--all-matches]
+                  [--text-budget MIB] [--format human|json]
                                             Scan a checkout or exact Git commit
 
 --untracked adds non-ignored untracked files to a working-tree check.
 --all-matches reports every text match instead of the first per rule and file;
 syntax rules cannot be counted yet, so selecting one exits 2.
+--text-budget sets how much scoped text one check reads, in MiB: 1 to 1024,
+default 64. A check that reaches it reports partial findings and exits 2.
 
 Exit codes: 0 clean, 1 violation or fixture mismatch, 2 cannot judge.";
 
@@ -37,6 +40,21 @@ resolve it first, e.g. --commit \"$(git rev-parse HEAD)\"";
 
 const UNTRACKED_COMMIT: &str = "--untracked applies to working-tree checks only; \
 a commit has no untracked files, so drop --untracked or --commit";
+
+const TEXT_BUDGET_HINT: &str =
+    "--text-budget requires a whole number of MiB from 1 to 1024 (default 64)";
+
+/// Parses `--text-budget` as decimal MiB in 1..=1024 and returns bytes.
+/// Digits only, so signs, units, fractions and values past u64 are refused.
+fn text_budget(value: Option<OsString>) -> Result<usize> {
+    value
+        .and_then(|value| value.into_string().ok())
+        .filter(|text| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|text| text.parse::<usize>().ok())
+        .filter(|mib| (1..=MAX_TEXT_BUDGET_MIB).contains(mib))
+        .map(|mib| mib * 1024 * 1024)
+        .ok_or_else(|| TEXT_BUDGET_HINT.into())
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum Format {
@@ -66,6 +84,7 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<u8> {
     let mut format = None;
     let mut untracked = false;
     let mut matches = Matches::First;
+    let mut budget = None;
     while let Some(flag) = args.next() {
         match flag.to_str() {
             Some("--root") if command == "check" && root.is_none() => {
@@ -87,6 +106,9 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<u8> {
             Some("--untracked") if command == "check" && !untracked => untracked = true,
             Some("--all-matches") if command == "check" && matches == Matches::First => {
                 matches = Matches::All;
+            }
+            Some("--text-budget") if command == "check" && budget.is_none() => {
+                budget = Some(text_budget(args.next())?);
             }
             Some("--id-prefix")
                 if matches!(command, "list" | "test" | "check") && prefix.is_none() =>
@@ -126,6 +148,7 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<u8> {
                 commit.as_deref(),
                 untracked,
                 matches,
+                budget,
                 prefix.as_deref(),
                 format.unwrap_or(Format::Human),
             );
@@ -160,6 +183,25 @@ fn select<'a>(rules: &'a [CompiledRule], prefix: Option<&str>) -> Result<Vec<&'a
 
 const EMPTY_SCOPE: &str = "empty text scope: track a matching file or update the rule's path globs";
 const EMPTY_SCOPES: &str = "one or more text rules matched no repository files";
+const UNEVALUATED: &str =
+    "not evaluated on every file in scope: the scan stopped at the text budget";
+
+/// Explains a budget stop: where, by how much, and what to change.
+fn budget_message(partial: &Partial) -> String {
+    let count = partial.unevaluated.len();
+    format!(
+        "scan stopped at {}: its text would bring the scan to {} bytes, over the {} MiB \
+         text budget, after {} bytes were evaluated; findings are partial and {count} {} not \
+         evaluated on every file in scope. Narrow the rule path scopes or select fewer rules \
+         with --id-prefix; raise --text-budget (at most {MAX_TEXT_BUDGET_MIB}) only if the \
+         scopes are already tight",
+        partial.path,
+        partial.needed,
+        partial.budget / (1024 * 1024),
+        partial.read,
+        if count == 1 { "rule was" } else { "rules were" },
+    )
+}
 
 /// Reads policy from stdin and scans the checkout or commit. Human output keeps
 /// the line format `path:line:column: [id] remediation`. JSON output always
@@ -170,9 +212,11 @@ fn check(
     commit: Option<&str>,
     untracked: bool,
     matches: Matches,
+    budget: Option<usize>,
     prefix: Option<&str>,
     format: Format,
 ) -> Result<u8> {
+    let budget_bytes = budget.unwrap_or(DEFAULT_TEXT_BUDGET_MIB * 1024 * 1024);
     let bytes = policy::read(io::stdin().lock());
     let digest = bytes
         .as_ref()
@@ -188,8 +232,8 @@ fn check(
             all_matches_supported(rules)?;
         }
         match commit {
-            Some(sha) => repository::check_commit(root, sha, rules, matches),
-            None => repository::check(root, rules, untracked, matches),
+            Some(sha) => repository::check_commit(root, sha, rules, matches, budget_bytes),
+            None => repository::check(root, rules, untracked, matches, budget_bytes),
         }
     });
 
@@ -205,6 +249,15 @@ fn check(
         for id in &report.empty_scopes {
             eprintln!("[{id}] {EMPTY_SCOPE}");
         }
+        if let Some(partial) = &report.partial {
+            for id in &partial.unevaluated {
+                eprintln!("[{id}] {UNEVALUATED}");
+            }
+            if !report.empty_scopes.is_empty() {
+                eprintln!("rulecheck: {EMPTY_SCOPES}");
+            }
+            return Err(budget_message(partial));
+        }
         if !report.empty_scopes.is_empty() {
             return Err(EMPTY_SCOPES.into());
         }
@@ -213,10 +266,12 @@ fn check(
 
     let mut diagnostics = Vec::new();
     let mut findings = Vec::new();
+    let mut partial_json = None;
     match &report {
         Ok(Report {
             findings: found,
             empty_scopes,
+            partial,
         }) => {
             findings = found.iter().map(finding_json).collect();
             for id in empty_scopes {
@@ -226,6 +281,22 @@ fn check(
             if !empty_scopes.is_empty() {
                 eprintln!("rulecheck: {EMPTY_SCOPES}");
                 diagnostics.push(json!({ "ruleId": null, "message": EMPTY_SCOPES }));
+            }
+            if let Some(partial) = partial {
+                for id in &partial.unevaluated {
+                    eprintln!("[{id}] {UNEVALUATED}");
+                    diagnostics.push(json!({ "ruleId": id, "message": UNEVALUATED }));
+                }
+                let message = budget_message(partial);
+                eprintln!("rulecheck: {message}");
+                diagnostics.push(json!({ "ruleId": null, "message": message }));
+                partial_json = Some(json!({
+                    "reason": "text-budget",
+                    "textBudgetBytes": partial.budget,
+                    "textBytesEvaluated": partial.read,
+                    "stoppedAt": partial.path,
+                    "unevaluatedRuleIds": partial.unevaluated,
+                }));
             }
         }
         Err(error) => {
@@ -256,7 +327,10 @@ fn check(
     if matches == Matches::All {
         source["matches"] = json!("all");
     }
-    let result = json!({
+    if let Some(bytes) = budget {
+        source["textBudgetMiB"] = json!(bytes / (1024 * 1024));
+    }
+    let mut result = json!({
         "resultVersion": RESULT_VERSION,
         "command": "check",
         "outcome": outcome,
@@ -272,6 +346,10 @@ fn check(
         "findings": findings,
         "diagnostics": diagnostics,
     });
+    // Present only after a budget stop, so finished scans keep their v1 shape.
+    if let Some(partial) = partial_json {
+        result["partial"] = partial;
+    }
     println!(
         "{}",
         serde_json::to_string_pretty(&result).expect("serialize result")

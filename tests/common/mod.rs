@@ -112,6 +112,13 @@ fn check(root: &Value, schema: &Value, value: &Value, at: &str, errors: &mut Vec
                     reasons.push(format!("below minimum {rule}"));
                 }
             }
+            "maximum" => {
+                if let Some(number) = value.as_f64()
+                    && number > rule.as_f64().unwrap()
+                {
+                    reasons.push(format!("above maximum {rule}"));
+                }
+            }
             "pattern" => {
                 if let Some(text) = value.as_str()
                     && !regex::Regex::new(rule.as_str().unwrap())
