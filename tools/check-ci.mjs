@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const builder = fileURLToPath(new URL("./build.mjs", import.meta.url));
@@ -11,6 +12,10 @@ const policyReviews = process.env.RULECHECK_POLICY_REVIEWS;
 const policyOwner = "pmdroid";
 const fullSha = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const outcomes = ["pass", "violation", "error"];
+// The committed baseline of existing findings. Base-check reads it from the
+// base commit, so a pull request cannot raise its own allowance.
+const baselinePath = ".rulecheck/baseline.json";
+const maxBaseline = 4 * 1024 * 1024;
 const evidence = {
   version: 1,
   baseSha: baseSha ?? null,
@@ -18,6 +23,7 @@ const evidence = {
   tools: { sourceSha: toolSha, node: process.version, git: null, builder: null, evaluator: null },
   phases: {},
   effectivePolicyDiff: null,
+  baselineChange: null,
 };
 
 function run(command, args, input) {
@@ -66,7 +72,7 @@ function effectivePolicy(raw) {
   return { rules, input, digest };
 }
 
-function evaluate(phase, policySha, testFixtures) {
+function evaluate(phase, policySha, testFixtures, baseline) {
   const build = run(process.execPath, [builder, "--root", resolve(root), "--commit", policySha]);
   record(`${phase}-build`, policySha, null, { ...build, stdout: undefined });
   if (build.outcome !== "pass") return null;
@@ -79,8 +85,78 @@ function evaluate(phase, policySha, testFixtures) {
     record(`${phase}-test`, policySha, policy.digest, run(resolve(evaluator), ["test"], policy.input));
   }
   const check = ["check", "--root", resolve(root), "--commit", candidateSha];
-  record(`${phase}-check`, policySha, policy.digest, run(resolve(evaluator), check, policy.input));
+  let details = {};
+  if (baseline) {
+    check.push("--baseline", baseline.file, ...(baseline.strict ? ["--strict-baseline"] : []));
+    const { source, sha, sha256, strict } = baseline;
+    details = { baseline: { source, sha, sha256, strict } };
+  }
+  record(`${phase}-check`, policySha, policy.digest, { ...run(resolve(evaluator), check, policy.input), ...details });
   return policy;
+}
+
+const git = (args, options = {}) => spawnSync("git", ["--no-replace-objects", "-C", resolve(root), ...args],
+  { maxBuffer: maxBaseline + 1, timeout: 120_000, killSignal: "SIGKILL", ...options });
+
+// Copies the baseline at an exact commit to a private file, or returns null if
+// the commit has none. Anything but a regular blob within the size limit throws.
+function commitBaseline(label, sha, scratch) {
+  const entry = git(["ls-tree", "-z", "--full-tree", sha, "--", baselinePath], { encoding: "utf8" });
+  if (entry.error || entry.status !== 0) throw new Error(`Could not list ${baselinePath} at ${sha}`);
+  if (!entry.stdout) return null;
+  const [mode, type, oid] = entry.stdout.split("\t")[0].split(" ");
+  if (!["100644", "100755"].includes(mode) || type !== "blob") {
+    throw new Error(`${baselinePath} at ${sha} must be a regular file`);
+  }
+  const blob = git(["cat-file", "blob", oid]);
+  if (blob.error || blob.status !== 0 || blob.stdout.length > maxBaseline) {
+    throw new Error(`Could not read ${baselinePath} at ${sha} within ${maxBaseline} bytes`);
+  }
+  const file = join(scratch, `${label}-baseline.json`);
+  writeFileSync(file, blob.stdout);
+  const sha256 = `sha256:${createHash("sha256").update(blob.stdout).digest("hex")}`;
+  return { file, sha, sha256, bytes: blob.stdout };
+}
+
+// True when the only path the candidate changes is the baseline: no code or
+// rule moved, so the reviewed baseline can only re-record the base's counts.
+function baselineOnly() {
+  const changes = git(["diff-tree", "--no-renames", "-r", "--name-only", "-z", baseSha, candidateSha],
+    { encoding: "utf8" });
+  if (changes.error || changes.status !== 0) throw new Error("Could not list the candidate's changed paths");
+  const paths = changes.stdout.split("\0").filter(Boolean);
+  return paths.length === 1 && paths[0] === baselinePath;
+}
+
+// Per rule and path, the allowances the candidate's baseline raises or lowers.
+// raised and lowered are null when either baseline is not valid JSON.
+function baselineChange(base, proposed, rebaseline) {
+  const parse = (baseline) => {
+    try {
+      return baseline ? JSON.parse(baseline.bytes).rules ?? {} : {};
+    } catch {
+      return null;
+    }
+  };
+  const before = parse(base);
+  const after = parse(proposed);
+  const change = { baseSha256: base?.sha256 ?? null, proposedSha256: proposed?.sha256 ?? null, rebaseline,
+    raised: null, lowered: null };
+  if (before === null || after === null) return change;
+  change.raised = [];
+  change.lowered = [];
+  const ids = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort();
+  for (const ruleId of ids) {
+    const old = before[ruleId]?.paths ?? {};
+    const now = after[ruleId]?.paths ?? {};
+    const matcherChanged = ruleId in before && ruleId in after && before[ruleId].matcher !== after[ruleId].matcher;
+    for (const path of [...new Set([...Object.keys(old), ...Object.keys(now)])].sort()) {
+      const entry = { ruleId, path, before: old[path] ?? 0, after: now[path] ?? 0, matcherChanged };
+      if (entry.after > entry.before) change.raised.push(entry);
+      if (entry.after < entry.before) change.lowered.push(entry);
+    }
+  }
+  return change;
 }
 
 function diff(base, proposed) {
@@ -103,6 +179,7 @@ function checkOwnerReview() {
   const details = { owner: policyOwner, required: true };
   try {
     const decisiveStates = new Set(["APPROVED", "CHANGES_REQUESTED", "DISMISSED"]);
+    if (policyReviews === undefined) throw new Error("RULECHECK_POLICY_REVIEWS is not set; a rebaseline needs it");
     const review = readFileSync(policyReviews, "utf8").trim().split("\n").filter(Boolean)
       .map((line) => JSON.parse(line))
       .findLast(({ owner, state }) => owner === policyOwner && decisiveStates.has(state));
@@ -123,11 +200,40 @@ try {
   evidence.tools.builder = version(process.execPath, [builder, "--version"]);
   evidence.tools.evaluator = version(resolve(evaluator), ["--version"]);
 
-  const base = evaluate("base", baseSha, false);
-  const proposed = evaluate("proposed", candidateSha, true);
-  if (base && proposed) evidence.effectivePolicyDiff = diff(base, proposed);
-  if (policyReviews !== undefined) {
-    record("proposed-owner-review", candidateSha, proposed?.digest ?? null, checkOwnerReview());
+  const scratch = mkdtempSync(join(tmpdir(), "rulecheck-baselines-"));
+  try {
+    let baseBaseline = null;
+    let proposedBaseline = null;
+    let rebaseline = false;
+    let readable = true;
+    try {
+      baseBaseline = commitBaseline("base", baseSha, scratch);
+      proposedBaseline = commitBaseline("proposed", candidateSha, scratch);
+      rebaseline = proposedBaseline !== null && baselineOnly();
+    } catch (error) {
+      readable = false;
+      record("baseline-read", null, null, { outcome: "error", error: error.message });
+    }
+    if (readable) {
+      // The trusted allowance is the base commit's. A baseline-only pull request
+      // is the reviewed rebaseline path: it changes no code or rule, so base-check
+      // uses its baseline, owner review is required, and the strict proposed check
+      // makes it equal the counts the base commit already has.
+      const trusted = rebaseline ? proposedBaseline : baseBaseline;
+      const base = evaluate("base", baseSha, false,
+        trusted && { ...trusted, source: rebaseline ? "proposed" : "base", strict: false });
+      const proposed = evaluate("proposed", candidateSha, true,
+        proposedBaseline && { ...proposedBaseline, source: "proposed", strict: true });
+      if (base && proposed) evidence.effectivePolicyDiff = diff(base, proposed);
+      if (baseBaseline || proposedBaseline) {
+        evidence.baselineChange = baselineChange(baseBaseline, proposedBaseline, rebaseline);
+      }
+      if (policyReviews !== undefined || rebaseline) {
+        record("proposed-owner-review", candidateSha, proposed?.digest ?? null, checkOwnerReview());
+      }
+    }
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
   }
 } catch (error) {
   record("setup", null, null, { outcome: "error", error: error.message });
