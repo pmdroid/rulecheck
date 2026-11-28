@@ -4,8 +4,10 @@ import { join, resolve } from "node:path";
 import ts from "typescript";
 
 const maxSource = 128 * 1024;
-const maxPolicy = 1024 * 1024;
-const maxRules = 128;
+// Kept equal to MAX_POLICY and MAX_RULES in src/policy.rs, maxPolicy in bin/rulecheck.mjs
+// and maxItems in schema/policy-v1.json.
+const maxPolicy = 4 * 1024 * 1024;
+const maxRules = 1024;
 const maxSets = 64;
 const maxEntries = 20_000;
 const marker = "@pmdroid/rulecheck";
@@ -18,6 +20,7 @@ const utf8 = new TextDecoder("utf-8", { fatal: true });
 const FULL_SHA = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i;
 const COMMIT_HINT = '--commit requires a full 40- or 64-character Git commit SHA; resolve it first, e.g. --commit "$(git rev-parse HEAD)"';
 const ROOT_HINT = "run from the checkout root or pass --root";
+const TOO_MANY_RULES = `${rulesDir}: more than ${maxRules} .rule.ts files; a policy holds at most ${maxRules} rules`;
 
 function readRule(path) {
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -40,8 +43,9 @@ function statIfPresent(path) {
   return lstatSync(path, { throwIfNoEntry: false });
 }
 
-function git(root, args, maxBuffer = 8 * 1024 * 1024) {
+function git(root, args, maxBuffer = 8 * 1024 * 1024, input = undefined) {
   const result = spawnSync("git", ["--no-replace-objects", "-C", root, ...args], {
+    input,
     maxBuffer,
     timeout: 15_000,
   });
@@ -112,7 +116,9 @@ function discover(root) {
         }
         if (kind.isDirectory() && !statIfPresent(join(root, path, ".git"))) walk(path, depth + 1);
         if (kind.isFile() && entry.name.endsWith(suffix)) {
-          if (found.length >= limit) throw new Error(`${directory}: at most ${limit} ${suffix} files are supported`);
+          if (found.length >= limit) {
+            throw new Error(suffix === ".rule.ts" ? TOO_MANY_RULES : `${directory}: at most ${limit} ${suffix} files are supported`);
+          }
           found.push(path);
         }
       }
@@ -162,11 +168,45 @@ function committedRules(root, sha) {
       if (inSets && path.endsWith(".set.ts")) sets.set(path, oid);
     }
   }
-  if (rules.size === 0 || rules.size > maxRules) {
-    throw new Error(`${rulesDir}: expected 1 to ${maxRules} regular .rule.ts files`);
-  }
+  if (rules.size === 0) throw new Error(`${rulesDir}: add a .rule.ts file at commit ${sha}`);
+  if (rules.size > maxRules) throw new Error(TOO_MANY_RULES);
   if (sets.size > maxSets) throw new Error(`${setsDir}: at most ${maxSets} .set.ts files are supported`);
   return new Map([...rules, ...sets]);
+}
+
+// Reads every committed rule and set blob with two Git processes, however many files there
+// are: one batch-check for object types and sizes, then one batch for the blobs that
+// fit. Spawning Git twice per rule made exact-commit discovery of 1024 rules take
+// seconds. Returns read(path), which fails for one rule as reading it alone would.
+function committedSources(root, rules) {
+  const oids = [...new Set(rules.values())];
+  const info = new Map();
+  const listing = git(root, ["cat-file", "--batch-check"], 8 * 1024 * 1024, oids.map((oid) => `${oid}\n`).join(""));
+  for (const line of listing.toString().split("\n").slice(0, -1)) {
+    const [oid, type, size] = line.split(" ");
+    info.set(oid, { type, size: Number(size) });
+  }
+  const wanted = oids.filter((oid) => info.get(oid)?.type === "blob" && info.get(oid).size <= maxSource);
+  const contents = new Map();
+  if (wanted.length > 0) {
+    const total = wanted.reduce((sum, oid) => sum + info.get(oid).size + 128, 0);
+    const batch = git(root, ["cat-file", "--batch"], total, wanted.map((oid) => `${oid}\n`).join(""));
+    let offset = 0;
+    for (const oid of wanted) {
+      const end = batch.indexOf(10, offset);
+      const header = batch.subarray(offset, end).toString();
+      const { size } = info.get(oid);
+      if (header !== `${oid} blob ${size}`) throw new Error("could not inspect Git checkout: unexpected cat-file output");
+      contents.set(oid, batch.subarray(end + 1, end + 1 + size));
+      offset = end + 2 + size;
+    }
+  }
+  return (path) => {
+    const oid = rules.get(path);
+    if (info.get(oid)?.type !== "blob") throw new Error("expected a Git blob object");
+    if (!contents.has(oid)) throw new Error("keep the rule file under 128 KiB");
+    return utf8.decode(contents.get(oid));
+  };
 }
 
 // .rulecheck/sets/web/vendor.set.ts names the set "web/vendor".
@@ -508,26 +548,19 @@ function build(args) {
   const { rules: paths, sets: setPaths } = committed
     ? { rules: all.filter((path) => !path.startsWith(`${setsDir}/`)), sets: all.filter((path) => path.startsWith(`${setsDir}/`)) }
     : discover(root);
-  const read = (path) => {
-    if (!committed) return readRule(join(root, path));
-    const oid = committed.get(path);
-    if (git(root, ["cat-file", "-t", oid], 32).toString() !== "blob\n") {
-      throw new Error("expected a Git blob object");
-    }
-    return utf8.decode(git(root, ["cat-file", "blob", oid], maxSource));
-  };
+  const read = committed ? committedSources(root, committed) : (path) => readRule(join(root, path));
   // Without set files the policy is byte-for-byte what earlier builders emitted.
   const sets = setPaths.map((path) => encodeSet(path, read));
   const setNames = new Set(setPaths.map(setName));
   const header = `{"version":1,${sets.length ? `"sets":[${sets.join(",")}],` : ""}"rules":[`;
   const footer = "]}\n";
   let size = Buffer.byteLength(header + footer);
-  if (size > maxPolicy) throw new Error(`${setsDir}:1:1: Policy exceeds 1 MiB. Reduce set sizes.`);
+  if (size > maxPolicy) throw new Error(`${setsDir}:1:1: Policy exceeds 4 MiB. Reduce set sizes.`);
   const rules = [];
   for (const path of paths) {
     const json = encodeRule(path, read, setNames);
     size += Buffer.byteLength(json) + Number(rules.length > 0);
-    if (size > maxPolicy) throw new Error(`${path}:1:1: Policy exceeds 1 MiB. Reduce rule and fixture sizes.`);
+    if (size > maxPolicy) throw new Error(`${path}:1:1: Policy exceeds 4 MiB. Reduce rule and fixture sizes.`);
     rules.push(json);
   }
   process.stdout.write(header + rules.join(",") + footer);

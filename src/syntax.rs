@@ -8,7 +8,7 @@ use crate::policy::{Result, Span};
 use regex::Regex;
 use serde::Deserialize;
 use std::collections::HashSet;
-use tree_sitter::{Language, Node, Parser};
+use tree_sitter::{Language, Node, Parser, Tree};
 
 const MAX_NAMES: usize = 16;
 
@@ -201,7 +201,11 @@ impl SyntaxMatcher {
 
     /// The byte range of the first selected node in document order. A file the
     /// grammar cannot parse without errors cannot be judged.
-    pub fn find(&self, path: &str, content: &str) -> Result<Option<Span>> {
+    ///
+    /// `trees` holds the file's parse trees by grammar, so every syntax rule
+    /// that applies to one file shares a single parse. Pass a fresh cache for
+    /// each file.
+    pub fn find(&self, path: &str, content: &str, trees: &mut Trees) -> Result<Option<Span>> {
         let (name, language) = dialects(self.language)
             .into_iter()
             .find(|(_, _, extensions)| extensions.iter().any(|ext| path.ends_with(ext)))
@@ -212,22 +216,8 @@ impl SyntaxMatcher {
                     "syntax rules for {language} apply to {extensions} files; narrow the path scope"
                 )
             })?;
-        let mut parser = Parser::new();
-        parser
-            .set_language(&language)
-            .map_err(|err| format!("cannot load the {name} grammar: {err}"))?;
-        let tree = parser
-            .parse(content, None)
-            .ok_or_else(|| format!("{name} parser returned no tree"))?;
+        let tree = trees.parse(name, &language, content)?;
         let root = tree.root_node();
-        if root.has_error() {
-            let at = first_error(root).unwrap_or(root).start_position();
-            return Err(format!(
-                "cannot parse as {name} near {}:{}; fix the syntax or narrow the path scope",
-                at.row + 1,
-                at.column + 1
-            ));
-        }
 
         // One pass in document order. Each frame on `path` records whether
         // its node lies inside a selected ancestor field, so a node's
@@ -302,6 +292,44 @@ impl SyntaxMatcher {
         let text = &content[node.byte_range()];
         !self.ignore.iter().any(|filter| filter.matches(text))
     }
+}
+
+/// The parse trees of one file, by grammar name. A tree with errors is kept as
+/// its error, so later rules report the same position without parsing again.
+#[derive(Default)]
+pub struct Trees(Vec<(&'static str, std::result::Result<Tree, String>)>);
+
+impl Trees {
+    fn parse(&mut self, name: &'static str, language: &Language, content: &str) -> Result<&Tree> {
+        let index = match self.0.iter().position(|(cached, _)| *cached == name) {
+            Some(index) => index,
+            None => {
+                self.0.push((name, parse(name, language, content)));
+                self.0.len() - 1
+            }
+        };
+        self.0[index].1.as_ref().map_err(Clone::clone)
+    }
+}
+
+fn parse(name: &str, language: &Language, content: &str) -> Result<Tree> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(language)
+        .map_err(|err| format!("cannot load the {name} grammar: {err}"))?;
+    let tree = parser
+        .parse(content, None)
+        .ok_or_else(|| format!("{name} parser returned no tree"))?;
+    let root = tree.root_node();
+    if root.has_error() {
+        let at = first_error(root).unwrap_or(root).start_position();
+        return Err(format!(
+            "cannot parse as {name} near {}:{}; fix the syntax or narrow the path scope",
+            at.row + 1,
+            at.column + 1
+        ));
+    }
+    Ok(tree)
 }
 
 struct Frame {
