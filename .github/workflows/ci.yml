@@ -25,7 +25,7 @@ jobs:
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - run: cargo test --locked --all-targets --all-features
       - run: cargo build --locked
-      - run: node --test tests/cookbook.test.mjs
+      - run: node --test tests/cookbook.test.mjs tests/release-archive.test.mjs
 
   cargo-install:
     strategy:
@@ -51,6 +51,10 @@ jobs:
           done
           cargo install --debug --locked --path "$source" --root "$RUNNER_TEMP/rulecheck-install"
           RULECHECK_INSTALLED_BIN="$RUNNER_TEMP/rulecheck-install/bin/rulecheck" node --test tests/installed-cli.test.mjs tests/installed-sources.test.mjs
+
+  # Builds the release archives for every target and runs each one without Rust.
+  release-archives:
+    uses: ./.github/workflows/release-archives.yml
 
   reproduce:
     runs-on: ubuntu-latest
