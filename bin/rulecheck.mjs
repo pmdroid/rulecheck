@@ -19,7 +19,8 @@ const timeout = 120_000;
 const HELP = `\
 rulecheck: deterministic repository checks
 
-  rulecheck check [--root DIR] [--commit SHA | --untracked] [--id-prefix PREFIX] [--all-matches] [--format human|json]
+  rulecheck check [--root DIR] [--commit SHA | --untracked] [--id-prefix PREFIX] [--all-matches]
+                  [--text-budget MIB] [--format human|json]
                      Build policy from .rulecheck/rules/**/*.rule.ts and scan the checkout
   rulecheck test [--root DIR] [--commit SHA] [--id-prefix PREFIX]
                      Run the rule fixtures
@@ -35,7 +36,9 @@ full 40- or 64-character SHA; resolve HEAD or a short SHA with git rev-parse fir
 By default check scans the files in the Git index; --untracked also scans non-ignored
 untracked files and cannot be combined with --commit. --all-matches reports every
 text match instead of the first per rule and file; syntax rules cannot be counted
-yet, so selecting one exits 2.
+yet, so selecting one exits 2. --text-budget sets how much scoped text one check
+reads, in MiB: 1 to 1024, default 64. A check that reaches it reports partial findings
+and exits 2; narrowing rule scopes is preferred to raising it.
 Rules are parsed as static data by the builder in ${install}; rule modules are never executed.
 The low-level evaluator that reads policy from stdin is ${evaluator}.
 --format json writes one versioned result document (schema/result-v1.json) to stdout.
@@ -51,6 +54,8 @@ const UNTRACKED_COMMIT = "--untracked applies to working-tree checks only; "
   + "a commit has no untracked files, so drop --untracked or --commit";
 // Flags that take no value; every other flag takes exactly one.
 const SWITCHES = ["--untracked", "--all-matches"];
+const MAX_TEXT_BUDGET = 1024;
+const TEXT_BUDGET_HINT = `--text-budget requires a whole number of MiB from 1 to ${MAX_TEXT_BUDGET} (default 64)`;
 
 function fail(message) {
   console.error(`rulecheck: ${message}`);
@@ -60,7 +65,7 @@ function fail(message) {
 function parse(command, args) {
   const options = new Map();
   const allowed = command === "validate" ? ["--root", "--commit"] : ["--root", "--commit", "--id-prefix"];
-  if (command === "check") allowed.push("--format", "--untracked", "--all-matches");
+  if (command === "check") allowed.push("--format", "--untracked", "--all-matches", "--text-budget");
   for (let index = 0; index < args.length; index += 1) {
     const flag = args[index];
     const value = SWITCHES.includes(flag) ? true : args[++index];
@@ -72,6 +77,10 @@ function parse(command, args) {
   if (options.has("--untracked") && options.has("--commit")) throw new UsageError(UNTRACKED_COMMIT);
   if (!["human", "json", undefined].includes(options.get("--format"))) {
     throw new UsageError("--format requires human or json");
+  }
+  const budget = options.get("--text-budget");
+  if (budget !== undefined && !(/^[0-9]+$/.test(budget) && Number(budget) >= 1 && Number(budget) <= MAX_TEXT_BUDGET)) {
+    throw new UsageError(TEXT_BUDGET_HINT);
   }
   const commit = options.get("--commit");
   if (commit !== undefined && !FULL_SHA.test(commit)) {
@@ -152,6 +161,7 @@ function errorResult(env, builder, options, messages) {
       mode: commit ? "commit" : "working-tree",
       ...(options.has("--untracked") ? { untracked: true } : {}),
       ...(options.has("--all-matches") ? { matches: "all" } : {}),
+      ...(options.has("--text-budget") ? { textBudgetMiB: Number(options.get("--text-budget")) } : {}),
     },
     tools: { builder, evaluator: version.status === 0 ? version.stdout.trim() : `rulecheck (${evaluator})` },
   };
@@ -216,6 +226,7 @@ function main(argv) {
   if (options.has("--id-prefix")) evaluate.push("--id-prefix", options.get("--id-prefix"));
   if (options.has("--untracked")) evaluate.push("--untracked");
   if (options.has("--all-matches")) evaluate.push("--all-matches");
+  if (options.has("--text-budget")) evaluate.push("--text-budget", options.get("--text-budget"));
   if (json) evaluate.push("--format", "json");
   const result = spawnSync(evaluator, evaluate, {
     cwd: install,

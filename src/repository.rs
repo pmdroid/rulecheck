@@ -8,7 +8,9 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 const MAX_ENTRIES: usize = 8 * 1024 * 1024;
-const MAX_TEXT: usize = 64 * 1024 * 1024;
+/// Default and largest `--text-budget`, in MiB, for the scoped text one scan reads.
+pub const DEFAULT_TEXT_BUDGET_MIB: usize = 64;
+pub const MAX_TEXT_BUDGET_MIB: usize = 1024;
 const MAX_FINDINGS: usize = 10_000;
 
 /// One rule's first match in one file, or with all-match mode one of its
@@ -32,11 +34,27 @@ pub enum Matches {
     All,
 }
 
-/// A completed scan. Text rules in `empty_scopes` matched no candidate file, so
-/// the scan cannot judge them and the command must exit 2.
+/// A finished or budget-stopped scan. Text rules in `empty_scopes` matched no
+/// candidate file, so the scan cannot judge them and the command must exit 2.
+/// With `partial` set the scan stopped at the text budget: `findings` are only
+/// those from the files before the stop, and the command must exit 2.
 pub struct Report<'a> {
     pub findings: Vec<Finding<'a>>,
     pub empty_scopes: Vec<&'a str>,
+    pub partial: Option<Partial<'a>>,
+}
+
+/// Where a scan stopped because the next scoped text file would exceed the
+/// text budget. Every rule that applies to that file or a later candidate is in
+/// `unevaluated`, in policy order; the other rules were evaluated on all files.
+pub struct Partial<'a> {
+    pub budget: usize,
+    /// Scoped text read and evaluated before the stop.
+    pub read: usize,
+    /// The file that did not fit, and the total it would have brought.
+    pub path: String,
+    pub needed: usize,
+    pub unevaluated: Vec<&'a str>,
 }
 
 pub const ROOT_HINT: &str = "run from the checkout root or pass --root";
@@ -49,6 +67,7 @@ pub fn check<'a>(
     rules: &[&'a CompiledRule],
     untracked: bool,
     matches: Matches,
+    budget: usize,
 ) -> Result<Report<'a>> {
     let directory = open(root, directory_flags(), Mode::empty())
         .map_err(|err| format!("cannot open checkout {}: {err}", root.display()))?;
@@ -74,7 +93,7 @@ pub fn check<'a>(
         paths.sort_unstable();
         paths.dedup();
     }
-    scan(paths, rules, matches, |path, needs_text| {
+    scan(paths, rules, matches, budget, |path, needs_text| {
         let Some(file) = open_candidate(&directory, path)? else {
             return Ok(None);
         };
@@ -93,6 +112,7 @@ pub fn check_commit<'a>(
     sha: &str,
     rules: &[&'a CompiledRule],
     matches: Matches,
+    budget: usize,
 ) -> Result<Report<'a>> {
     if git_output(root, &["cat-file", "-t", sha], 32)? != b"commit\n" {
         return Err("--commit requires a Git commit object".into());
@@ -115,6 +135,7 @@ pub fn check_commit<'a>(
         entries.keys().copied(),
         rules,
         matches,
+        budget,
         |path, needs_text| {
             let (kind, oid) = entries[path];
             if !matches!(kind, "100644 blob" | "100755 blob") {
@@ -137,11 +158,14 @@ fn scan<'a, 'p>(
     paths: impl IntoIterator<Item = &'p str>,
     rules: &[&'a CompiledRule],
     matches: Matches,
+    budget: usize,
     read: impl Fn(&str, bool) -> Result<Option<Vec<u8>>>,
 ) -> Result<Report<'a>> {
     let mut hits = vec![0; rules.len()];
     let mut findings = Vec::new();
     let mut text_bytes = 0;
+    let mut partial: Option<Partial> = None;
+    let mut unevaluated = vec![false; rules.len()];
     for path in paths {
         let mut applicable = rules
             .iter()
@@ -150,6 +174,12 @@ fn scan<'a, 'p>(
         let Some((_, first)) = applicable.clone().next() else {
             continue;
         };
+        // After a budget stop nothing more is read; the remaining candidates
+        // only mark which rules were not evaluated on every file in scope.
+        if partial.is_some() {
+            applicable.for_each(|(index, _)| unevaluated[index] = true);
+            continue;
+        }
         let context = |err| format!("[{}] {path}: {err}", first.id);
         let text_rule = applicable
             .clone()
@@ -165,12 +195,19 @@ fn scan<'a, 'p>(
         };
 
         let content = if text_rule.is_some() {
-            text_bytes += bytes.len();
-            if text_bytes > MAX_TEXT {
-                return Err(read_context(
-                    "scan exceeds 64 MiB of text; narrow the path scope".into(),
-                ));
+            // Each file is read once for all its rules and counted once.
+            if text_bytes + bytes.len() > budget {
+                partial = Some(Partial {
+                    budget,
+                    read: text_bytes,
+                    path: path.to_owned(),
+                    needed: text_bytes + bytes.len(),
+                    unevaluated: Vec::new(),
+                });
+                applicable.for_each(|(index, _)| unevaluated[index] = true);
+                continue;
             }
+            text_bytes += bytes.len();
             Some(String::from_utf8(bytes).map_err(|_| {
                 read_context("expected UTF-8 text; fix the file or narrow the path scope".into())
             })?)
@@ -212,13 +249,23 @@ fn scan<'a, 'p>(
     let empty_scopes = rules
         .iter()
         .zip(hits)
-        .filter(|(rule, count)| rule.matcher.needs_text() && *count == 0)
-        .map(|(rule, _)| rule.id.as_str())
+        .zip(&unevaluated)
+        .filter(|((rule, count), skipped)| rule.matcher.needs_text() && *count == 0 && !**skipped)
+        .map(|((rule, _), _)| rule.id.as_str())
         .collect();
+    if let Some(partial) = &mut partial {
+        partial.unevaluated = rules
+            .iter()
+            .zip(&unevaluated)
+            .filter(|(_, skipped)| **skipped)
+            .map(|(rule, _)| rule.id.as_str())
+            .collect();
+    }
     findings.sort_unstable();
     Ok(Report {
         findings,
         empty_scopes,
+        partial,
     })
 }
 

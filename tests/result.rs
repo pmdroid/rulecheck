@@ -377,8 +377,10 @@ fn input_bounds_fail_closed() {
     }
     git(root, &["add", "-A"]);
     let (result, _) = check_json(&[], &marker, root, 2);
-    let message = result["diagnostics"][0]["message"].as_str().unwrap();
-    assert!(message.contains("scan exceeds 64 MiB of text"), "{message}");
+    let message = result["diagnostics"][1]["message"].as_str().unwrap();
+    assert!(message.contains("over the 64 MiB text budget"), "{message}");
+    // Other scoped files under src/ sort first, so 63 files of 1 MiB fit.
+    assert_eq!(result["partial"]["stoppedAt"], "src/bulk/63.ts");
     fs::remove_dir_all(root.join("src/bulk")).unwrap();
 
     // More than 10,000 findings.
