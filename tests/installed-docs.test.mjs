@@ -70,6 +70,12 @@ test("README demo prints what its comments say with the installed CLI", { skip: 
     if (comment) expected.push(comment[1]);
   }
   assert.ok(expected.length >= 6, "README demo lost its expected-output comments");
+  // The README shows a run after the one-time compiler setup that its install
+  // section describes. Do that setup first, and check it says so on stderr.
+  const warm = spawnSync(installed, ["test"], { cwd: demo(dir, env), env, encoding: "utf8", timeout: 120_000 });
+  assert.ifError(warm.error);
+  assert.equal(warm.status, 0, warm.stderr);
+  assert.match(warm.stderr, /setting up the pinned TypeScript compiler \(first run only\)/);
   // Send the whole script's stderr to stdout, so builder errors appear in order.
   const result = bash(`exec 2>&1\n${script}`, dir, env);
   assert.equal(result.status, 0, result.stdout);
