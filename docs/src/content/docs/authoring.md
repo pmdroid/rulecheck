@@ -26,6 +26,26 @@ An `expectAll` mismatch starts with the first position where the lists differ an
 src/lib/math.ts:4:3: [source/no-console-log] fixture 2 expected 1 violation at 2:3, found 2 violations at 2:3, 4:3. Use the logger instead. Update the rule or fixture.
 ```
 
+## Require text in the same file
+
+A text rule with `requires` reports its `pattern` matches only in files where the `requires` text appears nowhere:
+
+```ts
+export default defineRule({
+  id: "source/interval-needs-clear",
+  kind: "text",
+  paths: ["src/**/*.ts"],
+  pattern: { kind: "regex", value: "\\bsetInterval\\(" },
+  requires: { kind: "literal", value: "clearInterval(" },
+  remediation: "Keep the interval handle and call clearInterval when the work stops.",
+  // ...
+});
+```
+
+Give such a rule fixtures for all three cases: no trigger (`expect: null`), the trigger with its requirement (`expect: null`), and the trigger without it (`expect` at the first trigger). Findings always point at the trigger. Default checks report the first trigger and `--all-matches` reports every trigger. `rulecheck check` and `rulecheck check --commit` judge the same file contents the same way. The [cookbook recipe](../cookbook/#require-text-in-the-same-file) runs both.
+
+`requires` is a `{ kind: "literal" | "regex", value }` object, like `pattern`. The builder rejects it on syntax and forbidden-path rules at the rule file's line and column. The evaluator rejects a regex requirement that can match empty text, because every file would meet it. The baseline `matcher` digest includes `requires`, so changing the requirement invalidates that rule's recorded counts. Rulecheck releases from before `requires` reject a policy that uses it as an unknown field (exit 2), so update every evaluator that checks the repository, including the trusted base tools in CI, before you use it.
+
 ## Record where a rule came from
 
 A rule can name the review finding that led to it:
