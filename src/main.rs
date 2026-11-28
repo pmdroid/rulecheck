@@ -1,4 +1,5 @@
 mod baseline;
+mod dialect;
 mod policy;
 mod repository;
 mod syntax;
@@ -694,6 +695,7 @@ fn test(rules: &[&CompiledRule]) -> bool {
                         expected,
                         actual,
                         &rule.remediation,
+                        rule.dialect_note.as_deref(),
                     ));
                 }
                 Err(error) => errors.push((&fixture.path, &rule.id, index, error)),
@@ -701,10 +703,11 @@ fn test(rules: &[&CompiledRule]) -> bool {
         }
     }
     failures.sort_unstable();
-    for (path, id, index, at, expected, actual, remediation) in &failures {
+    for (path, id, index, at, expected, actual, remediation, note) in &failures {
         let Location { line, column } = at;
+        let note = note.map(|note| format!(" {note}.")).unwrap_or_default();
         println!(
-            "{path}:{line}:{column}: [{id}] fixture {} expected {expected}, found {actual}. {remediation} Update the rule or fixture.",
+            "{path}:{line}:{column}: [{id}] fixture {} expected {expected}, found {actual}. {remediation} Update the rule or fixture.{note}",
             index + 1,
         );
     }

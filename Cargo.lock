@@ -260,6 +260,7 @@ version = "0.1.0"
 dependencies = [
  "globset",
  "regex",
+ "regex-syntax",
  "rustix",
  "serde",
  "serde_json",

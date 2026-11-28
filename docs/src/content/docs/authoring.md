@@ -146,6 +146,45 @@ Node kinds and fields are the grammar's own names, and the evaluator checks them
 
 Rulecheck releases from before syntax rules reject a policy that uses `kind: "syntax"` (exit 2), and releases from before Rust, Go or Python support reject that `language` the same way. Update every evaluator that checks the repository, including the trusted base tools in CI, before you add one.
 
+## Port a JavaScript regex
+
+Every regex in a rule (`pattern`, `requires`, `skipIfContent` and a selector `ignore` filter) uses the dialect of the Rust [`regex`](https://docs.rs/regex/1/regex/#syntax) crate. That is the only dialect: there is no JavaScript mode and no second engine. The crate matches in time linear in the file size, whatever the pattern and the input. Write the pattern as a string, not a `/…/` literal, and double each backslash inside the TypeScript string. Write JavaScript flags as inline flags: `(?i)`, `(?m)` and `(?s)`. `g` has no equivalent and isn't needed: `check` reports the first match, and `--all-matches` reports every match.
+
+Most JavaScript patterns mean the same thing in Rust. These don't:
+
+| JavaScript | Rust regex | Write instead |
+| --- | --- | --- |
+| `[` inside a class is a literal bracket: `[^[]`, `[[\]]` | `[` opens a nested class, so these don't compile | `[^\[]`, `[\[\]]` |
+| `[^]` matches any character | doesn't compile | `(?s:.)` |
+| `&&`, `--` and `~~` inside a class are literal characters (without the `v` flag) | intersection, difference and symmetric difference: `[a&&b]` compiles and never matches | `[a\&\&b]`, `[a\-\-b]`, `[a\~\~b]` |
+| `[[a]]` is the class `[[a]` followed by a literal `]` | the class `[a]` | `[\[a]\]` |
+| `\d`, `\w` and `\b` are ASCII | Unicode: `\d` matches `٣`, `\w` matches `é`, and `\bfoo` doesn't match in `éfoo` | `[0-9]`, `(?-u:\w)`, `(?-u:\b)` |
+| `.` excludes `\n`, `\r`, `\u2028` and `\u2029` | `.` excludes only `\n` | `[^\n\r\u{2028}\u{2029}]` |
+| `\b(?=\w)` and `(?<=\w)\b`, the start and end of a word | no look-around | `\b{start}` and `\b{end}` |
+| look-ahead `(?=…)`, `(?!…)` and look-behind `(?<=…)`, `(?<!…)` | not supported | a [rewrite](../cookbook/#port-a-javascript-regex), `paths` and `exclude`, or a [syntax rule](#syntax-rules) |
+| backreferences `\1`, `\k<name>` | not supported | list the alternatives ([example](../cookbook/#port-a-javascript-regex)) |
+| `a{,3}` is the literal text `a{,3}` | doesn't compile | `a{0,3}`, or `a\{,3\}` for the text |
+
+A pattern that doesn't compile exits 2 and names the rule. For a nested-class mistake, look-around and backreferences, a `hint:` line after the regex crate's message says what to write instead:
+
+```text
+rulecheck: [source/no-console-output] invalid regex: regex parse error:
+    \bconsole\.(?!error\b)\w+\(
+               ^^^
+error: look-around, including look-ahead and look-behind, is not supported
+hint: the Rust regex dialect has no look-around. Match a token edge with \b, \b{start} or \b{end}; consume the next character, as in name(?:[^_]|$), instead of a look-ahead; or move the condition into paths, exclude or a syntax selector
+```
+
+A nested class or a set operator compiles, and Rulecheck runs it with its Rust meaning, because a rule may intend exactly that. When a fixture of such a rule fails, the failure line ends with a note on how JavaScript reads the same text:
+
+```text
+src/app.ts:1:1: [source/no-and-operator] fixture 1 expected a violation at 1:1, found no violation. Replace the operator. Update the rule or fixture. This pattern uses the && set operator inside a character class, which the Rust regex dialect applies as set operations but JavaScript without the v flag reads as literal characters; to match the operator characters literally, escape each one with a backslash.
+```
+
+The note only appears with a failing fixture, and only for these class constructs in `pattern`, `requires` or an `ignore` filter. A `skipIfContent` regex gets the compile hints but no note. Add a fixture for each input that the JavaScript rule was meant to catch, so a difference shows up in `rulecheck test`, not in a missed finding.
+
+The rewrites have limits. A negative look-behind rewrite consumes the character before the match, so the finding starts one column early. A list of banned names doesn't catch a name that the list leaves out, where a negative look-ahead would. Rulecheck doesn't offer a backtracking engine for the remaining cases, because such an engine can take exponential time on crafted input.
+
 ## Type-check rules in your repository
 
 In the Rulecheck checkout, `npm run typecheck` checks the bundled rules and examples. In your own repository, install the SDK and TypeScript:
