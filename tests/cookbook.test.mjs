@@ -93,6 +93,9 @@ const recipes = {
     "src/app/total.py": '# Totals for the report.\ndef total(xs):\n    """Sum the values. # is not a comment here."""\n    sep = "# none"\n    # TODO: overflow check\n    return sum(xs)  # type: ignore[arg-type]\n',
   }, { "src/app/total.py": "def total(xs):\n    # add them up\n    return sum(xs)\n" },
   "src/app/total.py:2:5: [source/no-python-function-comments] Move the explanation into a docstring or a name."),
+  tags: recipe({ "services/billing/invoice.ts": "export const cents = Number.parseInt(text, 10);\n" },
+    { "services/billing/invoice.ts": "export const total = parseFloat(text);\n" },
+    "services/billing/invoice.ts:1:22: [billing/no-float-amounts] Parse amounts as integer cents (ADR 0007)."),
   requires: recipe({
     "src/clock.ts": "export const now = () => Date.now();\n",
     "src/poll.ts": "const id = setInterval(poll, 1000);\nexport const stop = () => clearInterval(id);\n",
@@ -225,6 +228,41 @@ for (const [name, { clean, bad, finding, args: flags }] of Object.entries(recipe
     }
   });
 }
+
+test("tag coverage report", (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), "rulecheck-coverage-"));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  run("git", ["init", "-q"], { cwd });
+  mkdirSync(join(cwd, ".rulecheck/rules"), { recursive: true });
+  for (const name of ["tags", "literal"]) {
+    copyFileSync(join(root, "docs/examples/rules", `${name}.rule.ts`), join(cwd, ".rulecheck/rules", `${name}.rule.ts`));
+  }
+  const input = run(process.execPath, [join(root, "tools/build.mjs"), "--root", cwd], { cwd }).stdout;
+  const inventory = run(evaluator, ["list", "--format", "json"], { input, cwd }).stdout;
+  const document = JSON.parse(inventory);
+  assert.deepEqual(document.rules.map(({ id, tags }) => [id, tags]), [
+    ["billing/no-float-amounts", ["adr/0007", "domain/billing"]],
+    ["config/no-legacy-spelling", []],
+  ]);
+  assert.equal(run(evaluator, ["list"], { input, cwd }).stdout, "billing/no-float-amounts\nconfig/no-legacy-spelling\n");
+  const coverage = join(root, "tools/coverage.mjs");
+  const required = join(root, "docs/examples/coverage/required-tags.txt");
+  const missing = run(process.execPath, [coverage, "--required", required], { input: inventory, cwd, status: 1 });
+  assert.equal(missing.stdout, "covered adr/0007: billing/no-float-amounts\n"
+    + "missing adr/0012: no rule has this tag\n"
+    + "covered domain/billing: billing/no-float-amounts\n"
+    + "untagged rules: config/no-legacy-spelling\n"
+    + "2 of 3 required tags covered\n");
+  const covered = run(process.execPath, [coverage, "--require", "domain/billing", "--format", "json"], { input: inventory, cwd });
+  assert.deepEqual(JSON.parse(covered.stdout), {
+    coverageVersion: 1,
+    policySha256: document.policy.sha256,
+    required: [{ tag: "domain/billing", rules: ["billing/no-float-amounts"] }],
+    missing: [],
+    untaggedRules: ["config/no-legacy-spelling"],
+  });
+  run(process.execPath, [coverage, "--require", "domain/billing"], { input: "[]", cwd, status: 2 });
+});
 
 test("invalid policy exits 2", () => {
   const result = run(evaluator, ["validate"], { status: 2, input: '{"version":42,"rules":[]}' });

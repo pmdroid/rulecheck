@@ -10,7 +10,7 @@ The installed `rulecheck` command builds policy from `.rulecheck/rules/**/*.rule
 | `rulecheck check [--root DIR] [--commit SHA \| --untracked] [--all-matches] [--text-budget MIB] [--baseline FILE [--strict-baseline]] [--format human\|json]` | Scan working-tree files tracked by Git (plus non-ignored untracked files with `--untracked`), or inspect exact committed blobs. With `--baseline`, report only counts above the [baseline](../baselines/). |
 | `rulecheck baseline [--root DIR] [--commit SHA \| --untracked] [--text-budget MIB] [--baseline FILE [--write]]` | Record the all-match counts of a complete scan as a [baseline](../baselines/), to stdout or with `--write` to `FILE`. |
 | `rulecheck test [--root DIR] [--commit SHA] [--strict-fixtures]` | Run rule fixtures. `--strict-fixtures` also fails rules with no [positive fixture](../authoring/#strict-fixture-coverage). |
-| `rulecheck list [--root DIR] [--commit SHA]` | List rule IDs in sorted order. |
+| `rulecheck list [--root DIR] [--commit SHA] [--format human\|json]` | List rule IDs in sorted order, or with `--format json` the [rule inventory](#rule-inventory). |
 | `rulecheck validate [--root DIR] [--commit SHA] [--strict-fixtures]` | Check policy syntax, rule IDs, globs, and patterns. `--strict-fixtures` also fails rules with no positive fixture. |
 | `rulecheck schema` | Print the v1 schema. |
 | `rulecheck help` | Print usage to stdout and exit 0. `-h` and `--help` do the same. |
@@ -160,6 +160,38 @@ The contract:
 - With `--baseline`, `source.matches` is `"all"`, `source.baselineSha256` is the SHA-256 of the baseline bytes (`null` when they couldn't be read), and `source.strictBaseline` is `true` with `--strict-baseline`. A `baseline` object with `exceeded`, `loose`, `staleRuleIds` and `allowedFindings` is present when a complete scan was compared, and `findings` then lists only the findings of rules and paths in `exceeded`. All of these are absent without `--baseline`; see [Baselines](../baselines/#result-document).
 - `tools.evaluator` is the evaluator version. The installed `rulecheck` command sets `tools.builder`. The low-level evaluator reports `null` because it reads policy from stdin.
 - If the builder fails, the installed command still writes an error result. It carries the builder's messages as diagnostics and `null` policy fields. Invalid arguments, including a short `--commit` value, `--untracked` with `--commit`, or a `--root` that is not the checkout root, produce no document, only a usage message and exit 2. Treat a missing or unparsable document as `error`.
+
+## Rule inventory
+
+`rulecheck list --format json` writes one JSON document that follows [`schema/inventory-v1.json`](https://github.com/pmdroid/rulecheck/blob/main/schema/inventory-v1.json). It lists every selected rule with its metadata, and it reads no repository files:
+
+```json
+{
+  "inventoryVersion": 1,
+  "policy": {
+    "idPrefix": null,
+    "sha256": "sha256:…",
+    "version": 1
+  },
+  "rules": [
+    {
+      "id": "billing/no-float-amounts",
+      "kind": "text",
+      "provenance": null,
+      "remediation": "Parse amounts as integer cents (ADR 0007).",
+      "tags": ["adr/0007", "domain/billing"]
+    }
+  ],
+  "tools": { "evaluator": "rulecheck 0.1.0" }
+}
+```
+
+- Rules are sorted by ID and each rule's [`tags`](../authoring/#tag-rules-for-coverage) are sorted, so the same policy gives the same document wherever it runs. `tags` is `[]` for an untagged rule and `provenance` is `null` without one.
+- `policy.sha256` is the SHA-256 of the policy bytes, as in `check` results, and `policy.idPrefix` is the `--id-prefix` value or `null`.
+- `--format human`, the default, prints one rule ID per line exactly as before tags existed. Only `list` and `check` take `--format`.
+- An invalid policy or an unmatched prefix exits 2 and writes nothing to stdout. Treat an unknown `inventoryVersion` as unreadable.
+
+`tools/coverage.mjs` in a Rulecheck checkout is a small, dependency-free consumer of this document: it reports which required tags have at least one rule. See the [coverage recipe](../cookbook/#tag-coverage).
 
 ## Limits
 

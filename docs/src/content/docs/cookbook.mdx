@@ -27,6 +27,8 @@ import allMatches from '../../../examples/rules/all-matches.rule.ts?raw';
 import requires from '../../../examples/rules/requires.rule.ts?raw';
 import consistencySameValues from '../../../examples/rules/consistency-same-values.rule.ts?raw';
 import consistencyPathExists from '../../../examples/rules/consistency-path-exists.rule.ts?raw';
+import tags from '../../../examples/rules/tags.rule.ts?raw';
+import requiredTags from '../../../examples/coverage/required-tags.txt?raw';
 import regexBackreference from '../../../examples/rules/regex-backreference.rule.ts?raw';
 import regexLookahead from '../../../examples/rules/regex-lookahead.rule.ts?raw';
 import regexLookbehind from '../../../examples/rules/regex-lookbehind.rule.ts?raw';
@@ -246,6 +248,29 @@ Both forms are bounded and judge the same inventory in a working tree and in an 
 - Each scope extracts at most 10,000 values of at most 1,024 bytes. More exits 2. In a finding's message each value is escaped and cut to 64 characters, like a [message template](../authoring/#per-finding-messages) capture.
 - After a [text budget](../cli/) stop the rule reports nothing and is listed as not evaluated, since a later file could change its result.
 - `skipIfContent` and `anchors` don't apply. Consistency rules don't join more than two scopes, don't compare snippets, and run no repository code.
+
+## Tag coverage
+
+[Tags](../authoring/#tag-rules-for-coverage) label a rule with the decisions and domains it covers. They don't change what the rule matches: this one reports a `parseFloat(` call in billing code as any text rule would.
+
+<Code code={tags} lang="ts" title="tags.rule.ts" />
+
+List the tags that need a rule, one per line:
+
+<Code code={requiredTags} lang="text" title="required-tags.txt" />
+
+Then pipe the [rule inventory](../cli/#rule-inventory) to `tools/coverage.mjs` from a Rulecheck checkout. It needs only Node.js, so you can copy it into another repository. With this rule and the [literal recipe](#literal-text), which has no tags, it reports one uncovered decision and exits 1:
+
+```text
+$ rulecheck list --format json | node tools/coverage.mjs --required required-tags.txt
+covered adr/0007: billing/no-float-amounts
+missing adr/0012: no rule has this tag
+covered domain/billing: billing/no-float-amounts
+untagged rules: config/no-legacy-spelling
+2 of 3 required tags covered
+```
+
+It exits 0 when every required tag has a rule and 2 when the input isn't a version 1 inventory or a required tag is malformed. `--require TAG` adds a tag on the command line, and `--format json` prints the same report as a JSON document with `required`, `missing` and `untaggedRules`. The report reads only the inventory, so it runs the same against `rulecheck list --commit SHA --format json`.
 
 ## Comments in function bodies
 

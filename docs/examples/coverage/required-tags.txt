@@ -1,0 +1,4 @@
+# Decisions and domains that need at least one rule.
+adr/0007
+adr/0012
+domain/billing
