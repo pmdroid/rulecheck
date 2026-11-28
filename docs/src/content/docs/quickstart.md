@@ -21,6 +21,65 @@ rule command, Rulecheck installs its pinned TypeScript compiler into a user cach
 Later runs reuse the cache. No project `npm install`, separate CLI build step, or
 generated policy file is needed. Keep the two installed executables together.
 
+## Set up the compiler from a mirror or offline
+
+The first-run setup reads its settings only from the environment of whoever runs
+`rulecheck`. It ignores every `.npmrc` (in the checked repository, your home
+directory and npm's global config), `npm_config_*` variables and
+`NODE_AUTH_TOKEN`, and it runs `npm ci --ignore-scripts` against Rulecheck's
+embedded lockfile, so the TypeScript version and its `sha512` integrity stay
+pinned whatever the source. Set at most one source:
+
+| Setting | Source |
+| --- | --- |
+| nothing | `https://registry.npmjs.org/` |
+| `RULECHECK_NPM_REGISTRY=https://npm.example.internal/npm/` | That registry or mirror. The lockfile's tarball URL is rewritten to it. |
+| `RULECHECK_COMPILER_TARBALL=/abs/path/typescript-5.9.3.tgz` | A preseeded tarball, installed with `npm --offline` and no network access. |
+
+With a private registry, keep credentials out of the URL. Put them in an npmrc
+file outside the checked repository and point `RULECHECK_NPM_USERCONFIG` at its
+absolute path:
+
+```sh
+cat > "$HOME/.config/rulecheck-mirror.npmrc" <<'NPMRC'
+//npm.example.internal/npm/:_authToken=${MIRROR_TOKEN}
+NPMRC
+export RULECHECK_NPM_REGISTRY=https://npm.example.internal/npm/
+export RULECHECK_NPM_USERCONFIG="$HOME/.config/rulecheck-mirror.npmrc"
+rulecheck test
+```
+
+If the configured registry is unreachable, refuses the credentials or serves a
+tarball whose integrity differs from the lockfile, setup exits 2 and says so.
+Rulecheck never retries against the public registry. A URL with a user name or
+password, a relative path, or a user config inside the checked repository is
+rejected before npm runs.
+
+For an air-gapped machine, fetch the tarball where the network is available and
+copy it over:
+
+```sh
+curl -fsSLo typescript-5.9.3.tgz https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz
+# on the offline machine
+RULECHECK_COMPILER_TARBALL="$PWD/typescript-5.9.3.tgz" rulecheck test
+```
+
+Rulecheck hashes the file and compares it with the lockfile's
+`sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==`
+before npm sees it. A different file exits 2 with the expected and actual
+integrity, and nothing is cached. Once setup has succeeded, later runs use the
+cache and need no source or network. A cache directory
+(`$XDG_CACHE_HOME/rulecheck/compiler-*`) copied from another machine with the
+same Rulecheck version is used as is.
+
+### What still needs Node
+
+Rulecheck still needs Node.js 20 or later on `PATH` for every rule command
+(`check`, `baseline`, `list`, `test`, `validate`), because the builder runs on
+the pinned TypeScript compiler. The first-run setup also needs the `npm` that
+ships with Node, including the offline tarball path. `rulecheck --version` and
+`rulecheck schema` need neither.
+
 ## Try a rule
 
 After adding the CLI to your PATH, try a literal rule in a throwaway Git repository:
