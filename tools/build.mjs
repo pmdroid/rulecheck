@@ -218,6 +218,9 @@ const isCount = (value) => Number.isInteger(value) && value >= 1;
 // Mirrors the provenance pattern and maxLength in schema/policy-v1.json and src/policy.rs.
 const isFindingUrl = (value) => typeof value === "string" && [...value].length <= 2048
   && /^https:\/\/[^\p{White_Space}\p{Cc}]+$/u.test(value);
+// Mirrors the tags and tag limits in schema/policy-v1.json and MAX_TAGS/MAX_TAG in src/policy.rs.
+const maxTags = 16;
+const isTag = (value) => typeof value === "string" && value.length <= 64 && /^[a-z0-9-]+(\/[a-z0-9-]+)*$/.test(value);
 const list = (names) => names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 
 // Checks the property names and value types of schema/policy-v1.json, so a typo is
@@ -241,7 +244,7 @@ function checkShape(rule, fail, setNames) {
 
   if (!isObject(rule)) fail(undefined, undefined, "The rule must be an object", "Pass an object literal to defineRule.");
   fields(rule, "the rule", ["id", "kind", "paths", "exclude", "excludeSets", "skipIfContent", "anchors", "remediation", "message", "pattern",
-    "requires", "selector", "structure", "consistency", "provenance", "fixtures"], ["id", "kind", "paths", "remediation", "fixtures"]);
+    "requires", "selector", "structure", "consistency", "provenance", "tags", "fixtures"], ["id", "kind", "paths", "remediation", "fixtures"]);
   expect(rule, "id", "rule", (value) => typeof value === "string", "a string");
   expect(rule, "kind", "rule", (value) => ["text", "forbidden-path", "syntax", "structured", "consistency"].includes(value),
     '"text", "forbidden-path", "syntax", "structured" or "consistency"');
@@ -281,6 +284,19 @@ function checkShape(rule, fail, setNames) {
     expect(rule, "provenance", "rule", isObject, "an object { finding }");
     fields(rule.provenance, "the provenance", ["finding"], ["finding"]);
     expect(rule.provenance, "finding", "provenance", isFindingUrl, "an https:// URL of at most 2048 characters");
+  }
+  if (Object.hasOwn(rule, "tags")) {
+    expect(rule, "tags", "rule", (value) => Array.isArray(value) && value.length >= 1 && value.length <= maxTags,
+      `an array of 1 to ${maxTags} tags`);
+    const seen = new Set();
+    for (const [index, tag] of rule.tags.entries()) {
+      if (!isTag(tag)) {
+        fail(rule.tags, index, `tag ${index + 1} must be at most 64 lowercase letters, digits, hyphens and slashes`,
+          'Write a tag shaped like a rule ID, such as "adr/0007" or "domain/billing".');
+      }
+      if (seen.has(tag)) fail(rule.tags, index, `Duplicate tag ${JSON.stringify(tag)} in tags`, "Remove the repeated tag.");
+      seen.add(tag);
+    }
   }
   const syntax = rule.kind === "syntax";
   const structured = rule.kind === "structured";

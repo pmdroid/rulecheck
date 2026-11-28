@@ -36,6 +36,10 @@ const MAX_POLICY_GLOBS: usize = 4096;
 /// The longest file prefix that `skipIfContent` reads.
 const MAX_SKIP_PREFIX: usize = 64 * 1024;
 const MAX_PROVENANCE_URL: usize = 2048;
+/// Tags per rule and bytes per tag, kept equal to the `tags` and `tag` limits
+/// in schema/policy-v1.json, tools/build.mjs and sdk/index.d.ts.
+pub const MAX_TAGS: usize = 16;
+pub const MAX_TAG: usize = 64;
 pub type Result<T> = std::result::Result<T, String>;
 
 #[derive(Deserialize)]
@@ -89,6 +93,8 @@ struct Rule {
     consistency: Option<consistency::Source>,
     #[serde(default, deserialize_with = "present")]
     provenance: Option<Provenance>,
+    #[serde(default, deserialize_with = "present")]
+    tags: Option<Vec<String>>,
     fixtures: Vec<FixtureSource>,
 }
 
@@ -126,6 +132,18 @@ enum Kind {
     Syntax,
     Structured,
     Consistency,
+}
+
+impl Kind {
+    fn name(self) -> &'static str {
+        match self {
+            Kind::Text => "text",
+            Kind::ForbiddenPath => "forbidden-path",
+            Kind::Syntax => "syntax",
+            Kind::Structured => "structured",
+            Kind::Consistency => "consistency",
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -201,10 +219,16 @@ pub struct Span {
 
 pub struct CompiledRule {
     pub id: String,
+    /// The rule's `kind`, as written in the policy.
+    pub kind: &'static str,
     pub remediation: String,
     /// Optional per-finding detail rendered from the regex's named captures.
     /// The fixed `remediation` is always reported beside it.
     pub message: Option<Template>,
+    /// Metadata for `list --format json`. Matching, fixtures, findings and the
+    /// matcher digest never read it. Tags are sorted and unique.
+    pub tags: Vec<String>,
+    pub provenance: Option<String>,
     pub scope: GlobSet,
     pub exclude: GlobSet,
     /// Forbidden-path rules only: globs for files that must exist for an
@@ -274,7 +298,7 @@ pub fn valid_rule_id(id: &str) -> bool {
 /// `sha256:` over the canonical JSON of a rule's `kind`, `pattern`,
 /// `requires`, `selector` and `structure`, which decide what matches inside one file. The ID, scope
 /// (including `excludeSets` and `skipIfContent`, which only take whole files out),
-/// remediation, provenance and fixtures are left out: none of them changes the
+/// remediation, provenance, tags and fixtures are left out: none of them changes the
 /// count in a file that stays in scope, and a file that enters the scope has
 /// no baseline allowance. The `counting` version changes whenever Rulecheck's
 /// all-match semantics do, so old baselines stop matching.
@@ -404,6 +428,11 @@ impl Rule {
                 "provenance.finding must be an https:// URL of at most {MAX_PROVENANCE_URL} characters, without spaces"
             ));
         }
+
+        let tags = match self.tags {
+            None => Vec::new(),
+            Some(tags) => compile_tags(tags)?,
+        };
 
         if !(1..=MAX_INLINE_GLOBS).contains(&self.paths.len()) {
             return Err(format!("provide 1 to {MAX_INLINE_GLOBS} path globs"));
@@ -626,8 +655,11 @@ impl Rule {
 
         Ok(CompiledRule {
             id: self.id,
+            kind: self.kind.name(),
             remediation: self.remediation,
             message,
+            tags,
+            provenance: self.provenance.map(|provenance| provenance.finding),
             matcher,
             matcher_digest: String::new(),
             scope,
@@ -694,6 +726,27 @@ fn consistency_fixture(index: usize, fixture: FixtureSource) -> Result<Fixture> 
         files: inventory.into_iter().collect(),
         expect: Expect::Findings(findings),
     })
+}
+
+/// Checks `tags`: 1 to 16 distinct tags of at most 64 bytes, each shaped like
+/// a rule ID (`adr/0007`, `domain/billing`). Returns them sorted, so a reordered
+/// list reads the same in the inventory.
+fn compile_tags(mut tags: Vec<String>) -> Result<Vec<String>> {
+    if !(1..=MAX_TAGS).contains(&tags.len()) {
+        return Err(format!("provide 1 to {MAX_TAGS} tags or omit tags"));
+    }
+    for tag in &tags {
+        if tag.len() > MAX_TAG || !valid_rule_id(tag) {
+            return Err(format!(
+                "invalid tag {tag:?}; use at most {MAX_TAG} lowercase letters, digits, hyphens and slashes, such as \"adr/0007\""
+            ));
+        }
+    }
+    tags.sort();
+    if let Some(pair) = tags.windows(2).find(|pair| pair[0] == pair[1]) {
+        return Err(format!("tags lists {:?} twice", pair[0]));
+    }
+    Ok(tags)
 }
 
 /// Mirrors the provenance `pattern` and `maxLength` in schema/policy-v1.json: an

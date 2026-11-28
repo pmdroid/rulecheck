@@ -521,7 +521,8 @@ fn schema_sdk_and_evaluator_accept_the_same_rule_fields() {
             "requires",
             "selector",
             "skipIfContent",
-            "structure"
+            "structure",
+            "tags"
         ]
     );
     assert_eq!(
@@ -565,6 +566,7 @@ fn schema_sdk_and_evaluator_accept_the_same_rule_fields() {
         "version: 1;\n  globs: readonly string[];\n  include?: readonly string[];",
         "export declare function defineGlobSet(set: GlobSet): GlobSet;",
         "provenance?: { finding: string };",
+        "tags?: readonly string[];",
         "remediation: string;",
         "message?: string;",
         "kind: \"text\";",

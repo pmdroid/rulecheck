@@ -126,6 +126,14 @@ interface RuleFields {
    * before provenance support reject policies that use it.
    */
   provenance?: { finding: string };
+  /**
+   * Optional stable labels for coverage reports, such as an architecture decision record
+   * ("adr/0007") or a domain ("domain/billing"): 1 to 16 distinct tags of at most 64
+   * lowercase letters, digits, hyphens and slashes, shaped like a rule ID. Matching,
+   * fixtures and findings ignore them; `rulecheck list --format json` reports them sorted.
+   * Rulecheck releases before tag support reject policies that use them.
+   */
+  tags?: readonly string[];
 }
 
 /**

@@ -27,8 +27,8 @@ rulecheck: deterministic repository checks
                      Record the finding counts of a complete scan as a baseline
   rulecheck test [--root DIR] [--commit SHA] [--id-prefix PREFIX] [--strict-fixtures]
                      Run the rule fixtures
-  rulecheck list [--root DIR] [--commit SHA] [--id-prefix PREFIX]
-                     List rule IDs
+  rulecheck list [--root DIR] [--commit SHA] [--id-prefix PREFIX] [--format human|json]
+                     List rule IDs, or with json the rule inventory (schema/inventory-v1.json)
   rulecheck validate [--root DIR] [--commit SHA] [--strict-fixtures]
                      Build and validate the policy
   rulecheck schema   Print the version 1 JSON schema
@@ -50,7 +50,8 @@ rules' entries change. A relative FILE is resolved from the current directory.
 expect no violation, since such a rule passes even if it never matches.
 Rules are parsed as static data by the builder in ${install}; rule modules are never executed.
 The low-level evaluator that reads policy from stdin is ${evaluator}.
---format json writes one versioned result document (schema/result-v1.json) to stdout.
+check --format json writes one versioned result document (schema/result-v1.json) to stdout.
+list --format json writes every rule's ID, kind, tags, provenance and remediation.
 The builder and the evaluator each stop after ${timeout / 1000} s.
 
 Exit codes: 0 clean, 1 violation or fixture mismatch, 2 cannot judge.`;
@@ -77,6 +78,7 @@ function parse(command, args) {
   if (command === "check") {
     allowed.push("--format", "--untracked", "--all-matches", "--text-budget", "--baseline", "--strict-baseline");
   }
+  if (command === "list") allowed.push("--format");
   if (command === "baseline") allowed.push("--untracked", "--text-budget", "--baseline", "--write");
   if (command === "test" || command === "validate") allowed.push("--strict-fixtures");
   for (let index = 0; index < args.length; index += 1) {
@@ -221,7 +223,9 @@ function main(argv) {
   const options = parse(command, args);
   const root = resolve(options.get("--root") ?? ".");
   const commit = options.get("--commit");
-  const json = options.get("--format") === "json";
+  // Only check wraps its JSON in a result document; list prints the evaluator's inventory as is.
+  const inventory = command === "list" && options.get("--format") === "json";
+  const json = command === "check" && options.get("--format") === "json";
   if (!commit) checkRoot(root, env);
   const builderVersion = checkTypeScript();
 
@@ -254,7 +258,7 @@ function main(argv) {
   for (const flag of ["--strict-baseline", "--write", "--strict-fixtures"]) {
     if (options.has(flag)) evaluate.push(flag);
   }
-  if (json) evaluate.push("--format", "json");
+  if (json || inventory) evaluate.push("--format", "json");
   const result = spawnSync(evaluator, evaluate, {
     cwd: install,
     env,

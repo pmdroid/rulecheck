@@ -122,6 +122,17 @@ fn check(root: &Value, schema: &Value, value: &Value, at: &str, errors: &mut Vec
                     reasons.push(format!("{keyword} {limit}, found {actual}"));
                 }
             }
+            "uniqueItems" => {
+                if rule == &Value::Bool(true)
+                    && let Some(items) = value.as_array()
+                    && items
+                        .iter()
+                        .enumerate()
+                        .any(|(index, item)| items[..index].contains(item))
+                {
+                    reasons.push("items must be unique".into());
+                }
+            }
             "minimum" => {
                 if let Some(number) = value.as_f64()
                     && number < rule.as_f64().unwrap()

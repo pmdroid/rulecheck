@@ -106,6 +106,14 @@
             }
           }
         },
+        "tags": {
+          "description": "Stable labels for coverage reports, such as an architecture decision (\"adr/0007\") or a domain (\"domain/billing\"). Matching, fixtures and findings ignore them; list --format json reports them sorted.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/tag" }
+        },
         "fixtures": {
           "type": "array",
           "minItems": 1,
@@ -190,6 +198,7 @@
         }
       }
     },
+    "tag": { "type": "string", "maxLength": 64, "pattern": "^[a-z0-9-]+(/[a-z0-9-]+)*$" },
     "setName": { "type": "string", "maxLength": 128, "pattern": "^[a-z0-9-]+(/[a-z0-9-]+)*$" },
     "set": {
       "description": "Includes nest at most 4 levels counting the set a rule names, and must not form a cycle.",

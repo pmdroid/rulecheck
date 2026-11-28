@@ -100,6 +100,26 @@ Matching ignores `provenance`. A rule finds the same files and lines with or wit
 
 Rulecheck releases from before `provenance` reject a policy that uses it as an unknown field (exit 2). Before you add it, make sure every evaluator that checks the repository, including the trusted base tools in CI, is a release that supports it.
 
+## Tag rules for coverage
+
+A rule can carry stable tags, such as the architecture decision record it enforces or the domain it guards:
+
+```ts
+export default defineRule({
+  id: "billing/no-float-amounts",
+  // ...
+  tags: ["adr/0007", "domain/billing"],
+  remediation: "Parse amounts as integer cents (ADR 0007).",
+  // ...
+});
+```
+
+`tags` is optional. It holds 1 to 16 distinct tags. Each tag is at most 64 characters and is shaped like a rule ID: lowercase letters, digits and hyphens in parts joined by `/`. A tag is a label, not a link, so keep the same spelling for the same decision or domain across rules and repositories. The builder rejects an empty list, a non-string, a malformed tag or a repeated tag at the rule file's line and column. The schema (`uniqueItems`) and the evaluator reject the same policy with exit 2 and name the rule.
+
+Matching ignores tags, as it ignores `provenance`. A rule finds the same files and lines with or without them, fixtures run the same way, findings in human or `--format json` output don't include them, and the baseline `matcher` digest leaves them out, so recorded counts stay valid. Tags are still part of the rule, so the policy bytes and the shadow workflow's policy digest change when you add, remove or reorder them. `rulecheck list` prints the same rule IDs as before. `rulecheck list --format json` prints each rule's tags, sorted, in the [rule inventory](../cli/#rule-inventory), and the [coverage recipe](../cookbook/#tag-coverage) reports which required tags have a rule.
+
+Rulecheck releases from before `tags` reject a policy that uses them as an unknown field (exit 2). Before you add them, make sure every evaluator that checks the repository, including the trusted base tools in CI, is a release that supports them.
+
 ## Reusable exclusion sets and content skips
 
 A rule can leave files out in three ways. They run in this order, in `rulecheck check` and `rulecheck test` alike:

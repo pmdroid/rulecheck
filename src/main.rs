@@ -19,6 +19,8 @@ use std::process::ExitCode;
 
 /// Version of the `check --format json` document, independent of the policy version.
 const RESULT_VERSION: u32 = 1;
+/// Version of the `list --format json` rule inventory (schema/inventory-v1.json).
+const INVENTORY_VERSION: u32 = 1;
 
 const HELP: &str = "\
 rulecheck: deterministic repository checks
@@ -27,7 +29,9 @@ rulecheck: deterministic repository checks
   rulecheck schema                          Print the version 1 JSON schema
   rulecheck help                            Print this help
   rulecheck validate [--strict-fixtures]    Validate a policy from stdin
-  rulecheck list [--id-prefix PREFIX]        List policy rule IDs
+  rulecheck list [--id-prefix PREFIX] [--format human|json]
+                                            List policy rule IDs, or with json
+                                            the rule inventory with tags
   rulecheck test [--id-prefix PREFIX] [--strict-fixtures]
                                             Check exact fixture expectations
   rulecheck check [--root DIR] [--commit SHA | --untracked] [--id-prefix PREFIX] [--all-matches]
@@ -173,7 +177,7 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<u8> {
                     .ok_or("--id-prefix requires a nonempty UTF-8 prefix")?;
                 prefix = Some(value);
             }
-            Some("--format") if command == "check" && format.is_none() => {
+            Some("--format") if matches!(command, "check" | "list") && format.is_none() => {
                 format = match args.next().as_ref().and_then(|value| value.to_str()) {
                     Some("human") => Some(Format::Human),
                     Some("json") => Some(Format::Json),
@@ -216,9 +220,18 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<u8> {
         "check" => return check(&options),
         "baseline" => return regenerate(&options),
         "validate" | "list" | "test" => {
-            let rules = policy::load(&policy::read(io::stdin().lock())?)?;
+            let bytes = policy::read(io::stdin().lock())?;
+            let rules = policy::load(&bytes)?;
             let rules = select(&rules, options.prefix.as_deref())?;
             let mut passed = match command {
+                "list" if options.format == Format::Json => {
+                    let document = inventory(&rules, &bytes, options.prefix.as_deref());
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&document).expect("serialize inventory")
+                    );
+                    true
+                }
                 "list" => {
                     rules.iter().for_each(|rule| println!("{}", rule.id));
                     true
@@ -234,6 +247,30 @@ fn run(mut args: impl Iterator<Item = OsString>) -> Result<u8> {
         _ => return Err(format!("unknown command {command:?}; run rulecheck help")),
     }
     Ok(0)
+}
+
+/// The `list --format json` document: every selected rule in ID order with its
+/// kind, sorted tags, provenance and remediation. The same policy bytes always
+/// give the same document, so consumers can diff or cache it by `policy.sha256`.
+fn inventory(rules: &[&CompiledRule], bytes: &[u8], prefix: Option<&str>) -> Value {
+    let rules: Vec<_> = rules
+        .iter()
+        .map(|rule| {
+            json!({
+                "id": rule.id,
+                "kind": rule.kind,
+                "tags": rule.tags,
+                "provenance": rule.provenance.as_ref().map(|finding| json!({ "finding": finding })),
+                "remediation": rule.remediation,
+            })
+        })
+        .collect();
+    json!({
+        "inventoryVersion": INVENTORY_VERSION,
+        "tools": { "evaluator": format!("rulecheck {}", env!("CARGO_PKG_VERSION")) },
+        "policy": { "version": 1, "sha256": sha256(bytes), "idPrefix": prefix },
+        "rules": rules,
+    })
 }
 
 fn select<'a>(rules: &'a [CompiledRule], prefix: Option<&str>) -> Result<Vec<&'a CompiledRule>> {
