@@ -29,6 +29,7 @@ import consistencySameValues from '../../../examples/rules/consistency-same-valu
 import consistencyPathExists from '../../../examples/rules/consistency-path-exists.rule.ts?raw';
 import tags from '../../../examples/rules/tags.rule.ts?raw';
 import requiredTags from '../../../examples/coverage/required-tags.txt?raw';
+import ignoreInside from '../../../examples/rules/ignore-inside.rule.ts?raw';
 import regexBackreference from '../../../examples/rules/regex-backreference.rule.ts?raw';
 import regexLookahead from '../../../examples/rules/regex-lookahead.rule.ts?raw';
 import regexLookbehind from '../../../examples/rules/regex-lookbehind.rule.ts?raw';
@@ -197,6 +198,22 @@ src/poll.ts:1:12: [source/interval-needs-clear] Keep the interval handle and cal
 ```
 
 `requires` takes the same `{ kind, value }` as `pattern`, and only text rules have it. A regex requirement that can match empty text, such as `x*` or `(clearInterval\()?`, is refused when the policy loads, because every file would meet it and the rule could never report. The requirement is file-wide presence only. It doesn't tie a trigger to a nearby match or to the same function. A file whose text can't be read as UTF-8, or a scoped path that can't be read without following a symlink, exits 2 and doesn't count as meeting the requirement.
+
+## Skip matches in comments and strings
+
+A text rule can skip a match that sits inside a comment or a string literal. `ignoreInside` parses the file with the pinned TypeScript grammar and judges each match on its own: a match wholly inside one of the listed `contexts` is skipped, and the search moves on to the next match. Here `eval(` in a comment or a string is a mention, not a call.
+
+<Code code={ignoreInside} lang="ts" title="ignore-inside.rule.ts" />
+
+The runner checks a clean checkout whose only `eval(` text is in a comment and a string, then adds a real call under the same comment. The working tree and the exact commit then both report:
+
+```text
+src/run.ts:2:38: [source/no-eval] Parse the input instead of calling eval.
+```
+
+`"comment"` covers `//` and `/* */` comments. `"string"` covers single- and double-quoted strings and the literal text of a template string, but not its `${...}` substitutions, which are code. A match that starts inside a context and ends outside it isn't skipped. The type keyword `string` isn't a string literal. `requires` still searches the whole file, comments and strings included.
+
+A match that can't be classified is never skipped or reported silently. When the pattern matches in a file that doesn't parse, or in a file the grammar doesn't cover (TypeScript covers `.ts`, `.mts`, `.cts` and `.tsx`), the check exits 2. The message names the rule, the file and the first syntax error, such as `[source/no-eval] src/run.ts: ignoreInside cannot classify the match: cannot parse as TypeScript near 2:…`. A file in which the pattern doesn't match isn't parsed, so it never fails this way.
 
 ## Say what each finding matched
 

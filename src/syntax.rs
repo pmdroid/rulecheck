@@ -363,3 +363,132 @@ fn first_error(root: Node) -> Option<Node> {
         return None;
     }
 }
+
+/// `ignoreInside` on a text rule: skip a match that lies wholly inside a
+/// parsed context, such as a comment or string literal. Each match is judged
+/// on its own, so an ignored occurrence never hides a later one, and the file
+/// is parsed only once a candidate needs classifying.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IgnoreInside {
+    language: ContextLanguage,
+    contexts: Vec<ContextName>,
+}
+
+/// Languages whose contexts `ignoreInside` can classify. Only TypeScript so far.
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum ContextLanguage {
+    Typescript,
+}
+
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum ContextName {
+    /// `//` and `/* */` comments.
+    Comment,
+    /// Quoted strings, and the literal parts of template strings. A `${...}`
+    /// substitution is code, not string.
+    String,
+}
+
+pub struct ContextFilter {
+    comments: bool,
+    strings: bool,
+}
+
+impl IgnoreInside {
+    pub fn compile(self) -> Result<ContextFilter> {
+        let ContextLanguage::Typescript = self.language;
+        if !(1..=2).contains(&self.contexts.len()) {
+            return Err("provide 1 or 2 ignoreInside contexts: \"comment\", \"string\"".into());
+        }
+        if self.contexts.len() == 2 && self.contexts[0] == self.contexts[1] {
+            return Err("ignoreInside lists a context twice".into());
+        }
+        Ok(ContextFilter {
+            comments: self.contexts.contains(&ContextName::Comment),
+            strings: self.contexts.contains(&ContextName::String),
+        })
+    }
+}
+
+impl ContextFilter {
+    /// The disjoint byte ranges of the file's ignored contexts, sorted by
+    /// start. A file outside the grammar's extensions, or one that does not
+    /// parse without errors, cannot be classified, so the match cannot be
+    /// judged: that is an error, never a silent skip or a silent finding.
+    pub fn ranges(&self, path: &str, content: &str, trees: &mut Trees) -> Result<Vec<Span>> {
+        let language = LanguageName::Typescript;
+        let (name, grammar) = dialects(language)
+            .into_iter()
+            .find(|(_, _, extensions)| extensions.iter().any(|ext| path.ends_with(ext)))
+            .map(|(name, grammar, _)| (name, grammar))
+            .ok_or_else(|| {
+                let (language, _, extensions) = language.describe();
+                format!(
+                    "ignoreInside for {language} classifies {extensions} files only; narrow the path scope"
+                )
+            })?;
+        let tree = trees
+            .parse(name, &grammar, content)
+            .map_err(|err| format!("ignoreInside cannot classify the match: {err}"))?;
+
+        // One pass in document order. A context node's children are skipped,
+        // except a template string's, whose substitutions may hold more
+        // contexts. Anonymous tokens are never contexts: the `string` type
+        // keyword is an anonymous node of kind "string".
+        let mut ranges = Vec::new();
+        let mut cursor = tree.root_node().walk();
+        'walk: loop {
+            let node = cursor.node();
+            let descend = match (node.is_named(), node.kind()) {
+                (true, "comment") if self.comments => false,
+                (true, "string") if self.strings => false,
+                (true, "template_string") if self.strings => {
+                    let mut start = node.start_byte();
+                    for child in node.children(&mut node.walk()) {
+                        if child.kind() == "template_substitution" {
+                            ranges.push(Span {
+                                start,
+                                end: child.start_byte(),
+                            });
+                            start = child.end_byte();
+                        }
+                    }
+                    ranges.push(Span {
+                        start,
+                        end: node.end_byte(),
+                    });
+                    true
+                }
+                _ => true,
+            };
+            if !descend {
+                ranges.push(Span {
+                    start: node.start_byte(),
+                    end: node.end_byte(),
+                });
+            } else if cursor.goto_first_child() {
+                continue;
+            }
+            loop {
+                if cursor.goto_next_sibling() {
+                    continue 'walk;
+                }
+                if !cursor.goto_parent() {
+                    break 'walk;
+                }
+            }
+        }
+        ranges.sort();
+        Ok(ranges)
+    }
+}
+
+/// Whether `span` lies wholly inside one of the sorted, disjoint `ranges`. A
+/// match that starts in a context and ends outside it is not ignored.
+pub fn inside(ranges: &[Span], span: Span) -> bool {
+    let after = ranges.partition_point(|range| range.start <= span.start);
+    after > 0 && span.end <= ranges[after - 1].end
+}

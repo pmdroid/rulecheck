@@ -122,6 +122,9 @@ const recipes = {
   }, { "assets/manifest.txt": "file: icons/logo.svg\nfile: icons/gone.svg\n" },
   "assets/manifest.txt:2:7: [assets/manifest-files-exist] \"icons/gone.svg\" resolves to assets/icons/gone.svg, "
     + "which is not in the selected inventory. Add the missing asset or remove its line from assets/manifest.txt."),
+  "ignore-inside": recipe({ "src/run.ts": "// eval(code) is banned here\nexport const note = \"never eval(code)\";\n" },
+    { "src/run.ts": "// eval(code) is banned here\nexport const run = (code: string) => eval(code);\n" },
+    "src/run.ts:2:38: [source/no-eval] Parse the input instead of calling eval."),
 };
 
 function run(bin, args, { cwd, input, status = 0 } = {}) {
@@ -221,6 +224,17 @@ for (const [name, { clean, bad, finding, args: flags }] of Object.entries(recipe
       scan({ expected: finding, sha: git("rev-parse", "HEAD") });
       write(clean);
       scan();
+    }
+    if (name === "ignore-inside") {
+      // The exact commit classifies the same bytes the same way. A file that
+      // does not parse cannot be classified once the pattern matches in it.
+      git("-c", "user.name=Rulecheck", "-c", "user.email=rulecheck@example.invalid",
+        "-c", "commit.gpgsign=false", "commit", "-qm", "Call eval");
+      scan({ expected: finding, sha: git("rev-parse", "HEAD") });
+      write({ "src/run.ts": "// eval(code)\nexport const run = (;\n" });
+      const broken = run(evaluator, ["check", "--root", cwd], { input, cwd, status: 2 });
+      assert.equal(broken.stdout, "");
+      assert.match(broken.stderr, /\[source\/no-eval\] src\/run\.ts: ignoreInside cannot classify the match: cannot parse as TypeScript near 2:/);
     }
     if (name === "scope") {
       write(clean);

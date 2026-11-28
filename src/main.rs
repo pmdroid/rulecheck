@@ -16,6 +16,7 @@ use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use syntax::Trees;
 
 /// Version of the `check --format json` document, independent of the policy version.
 const RESULT_VERSION: u32 = 1;
@@ -785,7 +786,7 @@ fn test(rules: &[&CompiledRule]) -> bool {
                     let actual = match applies {
                         true => rule
                             .matcher
-                            .find_all(&fixture.path, content, usize::MAX)
+                            .find_all(&fixture.path, content, usize::MAX, &mut Trees::default())
                             .map(|found| found.into_iter().map(|(at, _)| at).collect()),
                         false => Ok(Vec::new()),
                     };

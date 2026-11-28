@@ -2,7 +2,7 @@ use crate::consistency::{self, Consistency};
 use crate::dialect;
 use crate::message::Template;
 use crate::structured::{Structure, StructuredMatcher};
-use crate::syntax::{Selector, SyntaxMatcher, Trees};
+use crate::syntax::{self, ContextFilter, IgnoreInside, Selector, SyntaxMatcher, Trees};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use regex::Regex;
 use serde::{Deserialize, Deserializer};
@@ -85,6 +85,8 @@ struct Rule {
     pattern: Option<Pattern>,
     #[serde(default, deserialize_with = "present")]
     requires: Option<Pattern>,
+    #[serde(default, rename = "ignoreInside", deserialize_with = "present")]
+    ignore_inside: Option<IgnoreInside>,
     #[serde(default, deserialize_with = "present")]
     selector: Option<Selector>,
     #[serde(default, deserialize_with = "present")]
@@ -266,6 +268,12 @@ pub enum Matcher {
     Structured(StructuredMatcher),
     /// A cross-file rule, judged once over its whole selected inventory.
     Consistency(Box<Consistency>),
+    /// A literal or regex with `ignoreInside`: a match that lies wholly in
+    /// one of the filter's parsed contexts is skipped, one match at a time.
+    Contextual {
+        pattern: Box<Matcher>,
+        filter: ContextFilter,
+    },
 }
 
 pub(crate) fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
@@ -296,7 +304,7 @@ pub fn valid_rule_id(id: &str) -> bool {
 }
 
 /// `sha256:` over the canonical JSON of a rule's `kind`, `pattern`,
-/// `requires`, `selector` and `structure`, which decide what matches inside one file. The ID, scope
+/// `requires`, `ignoreInside`, `selector` and `structure`, which decide what matches inside one file. The ID, scope
 /// (including `excludeSets` and `skipIfContent`, which only take whole files out),
 /// remediation, provenance, tags and fixtures are left out: none of them changes the
 /// count in a file that stays in scope, and a file that enters the scope has
@@ -309,6 +317,7 @@ fn matcher_digest(rule: &Value) -> String {
         "kind",
         "pattern",
         "requires",
+        "ignoreInside",
         "selector",
         "structure",
         "consistency",
@@ -505,6 +514,12 @@ impl Rule {
                     .into(),
             );
         }
+        if self.ignore_inside.is_some() && !matches!(self.kind, Kind::Text) {
+            return Err(
+                "only text rules take ignoreInside; it filters the matches of a text pattern"
+                    .into(),
+            );
+        }
         if self.consistency.is_some() != matches!(self.kind, Kind::Consistency) {
             return Err(
                 "consistency rules require a consistency block, and only they take one".into(),
@@ -529,6 +544,15 @@ impl Rule {
             }
             (Kind::Text, Some(pattern), None, None) => {
                 let (trigger, note) = Matcher::compile(pattern)?;
+                // The filter applies to the pattern's matches only; `requires`
+                // still searches the whole file.
+                let trigger = match self.ignore_inside {
+                    None => trigger,
+                    Some(ignore) => Matcher::Contextual {
+                        pattern: Box::new(trigger),
+                        filter: ignore.compile()?,
+                    },
+                };
                 match self.requires {
                     None => (trigger, note),
                     Some(requires) => {
@@ -572,7 +596,10 @@ impl Rule {
 
         let message = match (self.message, &matcher) {
             (None, _) => None,
-            (Some(template), Matcher::Regex(regex)) => Some(Template::parse(&template, regex)?),
+            (Some(template), matcher) if matcher.template_regex().is_some() => {
+                let regex = matcher.template_regex().expect("checked by the guard");
+                Some(Template::parse(&template, regex)?)
+            }
             (Some(_), _) => {
                 return Err(
                     "message requires a regex text pattern, whose named groups it references; \
@@ -1036,6 +1063,11 @@ impl Matcher {
             Self::Consistency(_) => {
                 return Err("consistency rules are judged across files, not per file".into());
             }
+            Self::Contextual { pattern, filter } => {
+                Self::unignored(pattern, filter, path, content, trees, 1)?
+                    .into_iter()
+                    .next()
+            }
             Self::Requires {
                 trigger,
                 requirement,
@@ -1058,6 +1090,7 @@ impl Matcher {
             ),
             Self::ForbiddenPath => Some("forbidden-path rules report at most one finding per path"),
             Self::Requires { trigger, .. } => trigger.all_matches_unsupported(),
+            Self::Contextual { pattern, .. } => pattern.all_matches_unsupported(),
             Self::Literal(_) | Self::Regex(_) | Self::Structured(_) | Self::Consistency(_) => None,
         }
     }
@@ -1069,30 +1102,22 @@ impl Matcher {
     /// empty match that starts where the previous match ended. A forbidden
     /// path is one finding. With `requires`, every trigger match is a finding
     /// when the requirement matches nowhere in the file, and none is when it
-    /// does. Syntax rules are rejected before a scan starts.
+    /// does. With `ignoreInside`, the matches left after skipping ignored ones
+    /// count toward `limit`. Syntax rules are rejected before a scan starts.
     pub fn find_all(
         &self,
         path: &str,
         content: Option<&str>,
         limit: usize,
+        trees: &mut Trees,
     ) -> Result<Vec<(Location, Option<Span>)>> {
         let spans: Vec<Span> = match (self, content) {
-            (Self::Literal(value), Some(content)) => content
-                .match_indices(value.as_str())
-                .take(limit)
-                .map(|(start, found)| Span {
-                    start,
-                    end: start + found.len(),
-                })
-                .collect(),
-            (Self::Regex(regex), Some(content)) => regex
-                .find_iter(content)
-                .take(limit)
-                .map(|found| Span {
-                    start: found.start(),
-                    end: found.end(),
-                })
-                .collect(),
+            (Self::Literal(_) | Self::Regex(_), Some(content)) => {
+                self.spans(content).take(limit).collect()
+            }
+            (Self::Contextual { pattern, filter }, Some(content)) => {
+                Self::unignored(pattern, filter, path, content, trees, limit)?
+            }
             (
                 Self::Requires {
                     trigger,
@@ -1100,7 +1125,7 @@ impl Matcher {
                 },
                 Some(text),
             ) => {
-                let found = trigger.find_all(path, content, limit)?;
+                let found = trigger.find_all(path, content, limit, trees)?;
                 return Ok(match found.is_empty() || requirement.is_met(text) {
                     true => Vec::new(),
                     false => found,
@@ -1113,10 +1138,7 @@ impl Matcher {
                 return Err(self.all_matches_unsupported().unwrap_or_default().into());
             }
             _ => {
-                return Ok(self
-                    .find(path, content, &mut Trees::default())?
-                    .into_iter()
-                    .collect());
+                return Ok(self.find(path, content, trees)?.into_iter().collect());
             }
         };
         let content = content.unwrap_or_default();
@@ -1137,6 +1159,63 @@ impl Matcher {
                 (Location { line, column }, Some(span))
             })
             .collect())
+    }
+}
+
+impl Matcher {
+    /// The regex whose named groups a message template reads: a regex text
+    /// pattern, with or without `ignoreInside`.
+    fn template_regex(&self) -> Option<&Regex> {
+        match self {
+            Self::Regex(regex) => Some(regex),
+            Self::Contextual { pattern, .. } => pattern.template_regex(),
+            _ => None,
+        }
+    }
+
+    /// The all-match spans of a literal or regex pattern, in ascending order.
+    fn spans<'a>(&'a self, content: &'a str) -> Box<dyn Iterator<Item = Span> + 'a> {
+        match self {
+            Self::Literal(value) => Box::new(content.match_indices(value.as_str()).map(
+                |(start, found)| Span {
+                    start,
+                    end: start + found.len(),
+                },
+            )),
+            Self::Regex(regex) => Box::new(regex.find_iter(content).map(|found| Span {
+                start: found.start(),
+                end: found.end(),
+            })),
+            _ => unreachable!("ignoreInside and all-match spans wrap literal or regex patterns"),
+        }
+    }
+
+    /// Up to `limit` matches of `pattern` that are not wholly inside an
+    /// ignored context. Every candidate is classified on its own, so skipping
+    /// one moves on to the next match. The file is parsed only when the
+    /// pattern matches at least once.
+    fn unignored(
+        pattern: &Matcher,
+        filter: &ContextFilter,
+        path: &str,
+        content: &str,
+        trees: &mut Trees,
+        limit: usize,
+    ) -> Result<Vec<Span>> {
+        let mut ranges: Option<Vec<Span>> = None;
+        let mut kept = Vec::new();
+        for span in pattern.spans(content) {
+            if kept.len() >= limit {
+                break;
+            }
+            if ranges.is_none() {
+                ranges = Some(filter.ranges(path, content, trees)?);
+            }
+            if !syntax::inside(ranges.as_deref().unwrap_or_default(), span) {
+                kept.push(span);
+            }
+        }
+        Ok(kept)
     }
 }
 
@@ -1186,8 +1265,8 @@ impl CompiledRule {
     /// its captures are those of the reported match.
     pub fn message(&self, content: Option<&str>, span: Option<Span>) -> Option<String> {
         let template = self.message.as_ref()?;
-        let captures = match (&self.matcher, content, span) {
-            (Matcher::Regex(regex), Some(content), Some(span)) => {
+        let captures = match (self.matcher.template_regex(), content, span) {
+            (Some(regex), Some(content), Some(span)) => {
                 regex.captures_at(content, span.start).filter(|found| {
                     let whole = found.get(0).expect("group 0 is the whole match");
                     (whole.start(), whole.end()) == (span.start, span.end)

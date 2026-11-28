@@ -519,7 +519,7 @@ fn builder_reports_rule_shape_errors_at_the_rule_file() {
             "remediation:",
             "remedy:",
             "10:3: Unknown property remedy in the rule. \
-             Use id, kind, paths, exclude, excludeSets, skipIfContent, anchors, remediation, message, pattern, requires, selector, structure, consistency, provenance, tags and fixtures.",
+             Use id, kind, paths, exclude, excludeSets, skipIfContent, anchors, remediation, message, pattern, requires, ignoreInside, selector, structure, consistency, provenance, tags and fixtures.",
         ),
         (
             "content: \"legacy_mode = false\\n\", ",
