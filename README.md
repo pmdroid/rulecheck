@@ -8,10 +8,10 @@ The npm package [`@pmdroid/rulecheck`](https://www.npmjs.com/package/@pmdroid/ru
 is the TypeScript authoring SDK, not the CLI.
 
 Install Git, Node.js 20 or later with npm, and [Rust via rustup](https://rustup.rs/)
-on Linux or macOS. The CLI is not on crates.io yet, so install it from GitHub:
+on Linux or macOS. Install the CLI from [crates.io](https://crates.io/crates/rulecheck):
 
 ```sh
-cargo install --locked --git https://github.com/pmdroid/rulecheck.git
+cargo install --locked rulecheck
 rulecheck --version
 ```
 
@@ -134,6 +134,20 @@ cargo test --locked --all-targets --all-features
 cargo build --locked
 node --test tests/cookbook.test.mjs
 ```
+
+## Releasing the Rust CLI
+
+In the [crate settings on crates.io](https://crates.io/crates/rulecheck/settings),
+add a GitHub Actions trusted publisher for **`pmdroid/rulecheck`**, workflow
+**`crates-publish.yml`**, with no environment. No long-lived token belongs in
+GitHub. After the first successful OIDC release, enable **Trusted Publishing Only**
+in the crate settings and revoke any bootstrap token you no longer need.
+
+Bump the version in `Cargo.toml` and update `Cargo.lock` in a PR. After CI
+passes and the PR is merged, publish a GitHub Release from that commit on
+`main` tagged `rust-v<version>` (for example, `rust-v0.1.1`). The workflow
+verifies and publishes that version directly to crates.io. An `sdk-v` release
+does not publish the crate.
 
 ## Documentation
 

@@ -3,15 +3,15 @@ title: Quickstart
 description: Build Rulecheck from a fresh clone and try a rule.
 ---
 
-The npm package `@pmdroid/rulecheck` is the TypeScript authoring SDK, not the CLI. The full CLI currently installs from the GitHub checkout below. The Rust crate is not on crates.io yet.
+The npm package `@pmdroid/rulecheck` is the TypeScript authoring SDK, not the CLI. Install the CLI separately as shown below.
 
 ## Install the `rulecheck` command
 
 Install Git, Node.js 20 or later with npm, and [Rust via rustup](https://rustup.rs/)
-on Linux or macOS. The CLI is not on crates.io yet, so install it from GitHub:
+on Linux or macOS. Install the CLI from [crates.io](https://crates.io/crates/rulecheck):
 
 ```sh
-cargo install --locked --git https://github.com/pmdroid/rulecheck.git
+cargo install --locked rulecheck
 rulecheck --version
 ```
 
