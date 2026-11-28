@@ -611,8 +611,9 @@ fn test(rules: &[&CompiledRule]) -> bool {
     for rule in rules {
         for (index, fixture) in rule.fixtures.iter().enumerate() {
             count += 1;
-            let applies = rule.applies_to(&fixture.path);
+            // The same path and content checks as a scan, in the same order.
             let content = fixture.content.as_deref();
+            let applies = rule.applies_to(&fixture.path) && !rule.skips(content);
             let mismatch = match &fixture.expect {
                 Expect::First(expected) => {
                     let actual = match applies {

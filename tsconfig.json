@@ -7,5 +7,5 @@
       "@rulecheck/sdk": ["./sdk/index.d.ts"]
     }
   },
-  "include": [".rulecheck/rules/**/*.rule.ts", "docs/examples/rules/*.rule.ts"]
+  "include": [".rulecheck/rules/**/*.rule.ts", "docs/examples/rules/*.rule.ts", "docs/examples/sets/*.set.ts"]
 }

@@ -9,6 +9,9 @@ import regex from '../../../examples/rules/regex.rule.ts?raw';
 import path from '../../../examples/rules/path.rule.ts?raw';
 import scope from '../../../examples/rules/scope.rule.ts?raw';
 import exclude from '../../../examples/rules/exclude.rule.ts?raw';
+import exclusionSets from '../../../examples/rules/exclusion-sets.rule.ts?raw';
+import generatedSet from '../../../examples/sets/generated.set.ts?raw';
+import thirdPartySet from '../../../examples/sets/third-party.set.ts?raw';
 import ruleSources from '../../../examples/rules/rule-sources.rule.ts?raw';
 import multiScope from '../../../examples/rules/multi-scope.rule.ts?raw';
 import pathGlobs from '../../../examples/rules/path-globs.rule.ts?raw';
@@ -60,6 +63,16 @@ The same marker appears in source and generated files, but only `src/` is in sco
 Use `exclude` to drop files from a broad scope. A file is checked when it matches `paths` and nothing in `exclude`. Fixtures use the same scope, so add a fixture for each excluded area. Both lists are case-sensitive, which means `src/Generated/` is still in scope here. If a scope such as `**/*.ts` would also cover the rule sources, add `.rulecheck/**` to `exclude`, as the [next recipe](#rule-sources-in-a-broad-scope) shows.
 
 <Code code={exclude} lang="ts" title="exclude.rule.ts" />
+
+## Shared exclusion sets and generated headers
+
+When several rules leave out the same generated or vendored files, put the globs in a named set under `.rulecheck/sets/` and list it in `excludeSets`. `generated` includes `third-party`, so this rule also leaves out `vendor/`. `skipIfContent` leaves out a file whose first line is a `// @generated` header, wherever it lives. A header after the first line doesn't match, because the regex has no `(?m)` flag. The runner copies both set files into the checkout's `.rulecheck/sets/`. See [exclusion sets and content skips](../authoring/#reusable-exclusion-sets-and-content-skips) for the order of checks and the limits.
+
+<Code code={generatedSet} lang="ts" title=".rulecheck/sets/generated.set.ts" />
+
+<Code code={thirdPartySet} lang="ts" title=".rulecheck/sets/third-party.set.ts" />
+
+<Code code={exclusionSets} lang="ts" title="exclusion-sets.rule.ts" />
 
 ## Rule sources in a broad scope
 
