@@ -19,6 +19,9 @@ const recipes = {
   path: recipe({ "config/app.toml": "# normal configuration\n" },
     { "config/local.override.toml": "" },
     "config/local.override.toml:1:1: [config/no-local-overrides] Move the local override outside the tracked checkout."),
+  "path-anchors": recipe({ "services/billing/config/app.toml": "port = 8080\n" },
+    { "services/billing/config/dev.local.toml": "" },
+    "services/billing/config/dev.local.toml:1:1: [config/no-service-overrides] Keep local overrides out of Git."),
   scope: recipe({ "src/app.ts": "currentMarker();\n", "generated/app.ts": "legacyMarker();\n" },
     { "src/app.ts": "legacyMarker();\n" },
     "src/app.ts:1:1: [source/no-legacy-marker] Replace the legacy marker in source."),
@@ -129,6 +132,23 @@ for (const [name, { clean, bad, finding, args: flags }] of Object.entries(recipe
       git("-c", "user.name=Rulecheck", "-c", "user.email=rulecheck@example.invalid",
         "-c", "commit.gpgsign=false", "commit", "-qm", "Add markers");
       scan({ expected: finding, sha: git("rev-parse", "HEAD") });
+    }
+    if (name === "path-anchors") {
+      // The service moves: the stale rule cannot judge in either mode.
+      git("rm", "-q", "--cached", "services/billing/config/dev.local.toml");
+      git("mv", "services/billing", "services/payments");
+      git("-c", "user.name=Rulecheck", "-c", "user.email=rulecheck@example.invalid",
+        "-c", "commit.gpgsign=false", "commit", "-qm", "Move the service");
+      const missing = "[config/no-service-overrides] missing anchor: no file matches the rule's anchors, "
+        + "so the area it guards moved or vanished and an absent forbidden path proves nothing; "
+        + "restore the anchor or update anchors and paths together\n"
+        + "rulecheck: one or more forbidden-path rules found none of their anchors\n";
+      for (const sha of [null, git("rev-parse", "HEAD")]) {
+        const args = ["check", "--root", cwd, ...(sha ? ["--commit", sha] : [])];
+        const moved = run(evaluator, args, { input, cwd, status: 2 });
+        assert.equal(moved.stdout, "");
+        assert.equal(moved.stderr, missing);
+      }
     }
     if (name === "scope") {
       write(clean);
