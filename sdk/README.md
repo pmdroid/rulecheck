@@ -15,8 +15,11 @@ as data, not executed, and no policy JSON file needs to be generated or committe
 
 ## Releases
 
-Increment `sdk/package.json` in a reviewed PR. From the merged `main`, run
-**Stage npm SDK** and approve the staged version in npm with 2FA.
+Increment the version in `sdk/package.json` in a reviewed PR. After merging, create
+and publish a GitHub Release from that commit on `main` with a matching tag, such as
+`sdk-v0.1.1`. **Stage npm SDK** runs automatically for stable SDK releases, not for
+drafts, prereleases, bare tag pushes, or Rust releases. Approve the staged version
+in npm with 2FA to make it public.
 
 For the first release only, a maintainer of the npm scope signs in locally and runs
 `npm stage publish ./sdk --access public` with npm 11.15 or newer, then reviews
