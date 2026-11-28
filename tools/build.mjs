@@ -39,8 +39,9 @@ function statIfPresent(path) {
   return lstatSync(path, { throwIfNoEntry: false });
 }
 
-function git(root, args, maxBuffer = 8 * 1024 * 1024) {
+function git(root, args, maxBuffer = 8 * 1024 * 1024, input = undefined) {
   const result = spawnSync("git", ["--no-replace-objects", "-C", root, ...args], {
+    input,
     maxBuffer,
     timeout: 15_000,
   });
@@ -151,6 +152,41 @@ function committedRules(root, sha) {
   if (rules.size === 0) throw new Error(`${rulesDir}: add a .rule.ts file at commit ${sha}`);
   if (rules.size > maxRules) throw new Error(TOO_MANY_RULES);
   return rules;
+}
+
+// Reads every committed rule blob with two Git processes, however many rules there
+// are: one batch-check for object types and sizes, then one batch for the blobs that
+// fit. Spawning Git twice per rule made exact-commit discovery of 1024 rules take
+// seconds. Returns read(path), which fails for one rule as reading it alone would.
+function committedSources(root, rules) {
+  const oids = [...new Set(rules.values())];
+  const info = new Map();
+  const listing = git(root, ["cat-file", "--batch-check"], 8 * 1024 * 1024, oids.map((oid) => `${oid}\n`).join(""));
+  for (const line of listing.toString().split("\n").slice(0, -1)) {
+    const [oid, type, size] = line.split(" ");
+    info.set(oid, { type, size: Number(size) });
+  }
+  const wanted = oids.filter((oid) => info.get(oid)?.type === "blob" && info.get(oid).size <= maxSource);
+  const contents = new Map();
+  if (wanted.length > 0) {
+    const total = wanted.reduce((sum, oid) => sum + info.get(oid).size + 128, 0);
+    const batch = git(root, ["cat-file", "--batch"], total, wanted.map((oid) => `${oid}\n`).join(""));
+    let offset = 0;
+    for (const oid of wanted) {
+      const end = batch.indexOf(10, offset);
+      const header = batch.subarray(offset, end).toString();
+      const { size } = info.get(oid);
+      if (header !== `${oid} blob ${size}`) throw new Error("could not inspect Git checkout: unexpected cat-file output");
+      contents.set(oid, batch.subarray(end + 1, end + 1 + size));
+      offset = end + 2 + size;
+    }
+  }
+  return (path) => {
+    const oid = rules.get(path);
+    if (info.get(oid)?.type !== "blob") throw new Error("expected a Git blob object");
+    if (!contents.has(oid)) throw new Error("keep the rule file under 128 KiB");
+    return utf8.decode(contents.get(oid));
+  };
 }
 
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -419,14 +455,7 @@ function build(args) {
   const sha = options.get("--commit");
   const committed = sha && committedRules(root, sha);
   const paths = committed ? [...committed.keys()].sort() : discover(root);
-  const read = (path) => {
-    if (!committed) return readRule(join(root, path));
-    const oid = committed.get(path);
-    if (git(root, ["cat-file", "-t", oid], 32).toString() !== "blob\n") {
-      throw new Error("expected a Git blob object");
-    }
-    return utf8.decode(git(root, ["cat-file", "blob", oid], maxSource));
-  };
+  const read = committed ? committedSources(root, committed) : (path) => readRule(join(root, path));
   const header = '{"version":1,"rules":[';
   const footer = "]}\n";
   let size = Buffer.byteLength(header + footer);

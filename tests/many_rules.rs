@@ -514,6 +514,17 @@ fn invalid_rules_and_settings_in_a_large_policy_fail_closed_with_the_rule_named(
         0,
     );
     assert!(stderr.is_empty(), "{stderr}");
+
+    // Exact-commit discovery reads all rule blobs in one batch but still
+    // refuses an oversized one by path, as the working tree does.
+    let padded = format!("{}// {}\n", rule_source(301), "x".repeat(128 * 1024));
+    write(root, &broken, &padded);
+    let over = commit(root, "An oversized rule");
+    let message = format!("rulecheck build: {broken}:1:1: keep the rule file under 128 KiB.");
+    let (_, stderr) = run(install.build(root, &[]), 2);
+    assert!(stderr.starts_with(&message), "{stderr}");
+    let (_, stderr) = run(install.build(root, &["--commit", &over]), 2);
+    assert!(stderr.starts_with(&message), "{stderr}");
 }
 
 #[test]
