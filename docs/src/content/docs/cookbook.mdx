@@ -30,6 +30,7 @@ import consistencyPathExists from '../../../examples/rules/consistency-path-exis
 import tags from '../../../examples/rules/tags.rule.ts?raw';
 import requiredTags from '../../../examples/coverage/required-tags.txt?raw';
 import ignoreInside from '../../../examples/rules/ignore-inside.rule.ts?raw';
+import ignoreInsideBash from '../../../examples/rules/ignore-inside-bash.rule.ts?raw';
 import regexBackreference from '../../../examples/rules/regex-backreference.rule.ts?raw';
 import regexLookahead from '../../../examples/rules/regex-lookahead.rule.ts?raw';
 import regexLookbehind from '../../../examples/rules/regex-lookbehind.rule.ts?raw';
@@ -214,6 +215,20 @@ src/run.ts:2:38: [source/no-eval] Parse the input instead of calling eval.
 `"comment"` covers `//` and `/* */` comments. `"string"` covers single- and double-quoted strings and the literal text of a template string, but not its `${...}` substitutions, which are code. A match that starts inside a context and ends outside it isn't skipped. The type keyword `string` isn't a string literal. `requires` still searches the whole file, comments and strings included.
 
 A match that can't be classified is never skipped or reported silently. When the pattern matches in a file that doesn't parse, or in a file the grammar doesn't cover (TypeScript covers `.ts`, `.mts`, `.cts` and `.tsx`), the check exits 2. The message names the rule, the file and the first syntax error, such as `[source/no-eval] src/run.ts: ignoreInside cannot classify the match: cannot parse as TypeScript near 2:…`. A file in which the pattern doesn't match isn't parsed, so it never fails this way.
+
+### Shell scripts
+
+The same filter classifies `.sh` and `.bash` files with `language: "bash"`. Here `git push --force` in a `#` comment or a quoted string is a mention, but a `$(...)` substitution inside double quotes is code, and a heredoc body is data passed to a command, so both are reported.
+
+<Code code={ignoreInsideBash} lang="ts" title="ignore-inside-bash.rule.ts" />
+
+The runner checks a clean script whose only mentions are in a comment and a string, then adds the push under the same comment:
+
+```text
+scripts/release.sh:3:1: [scripts/no-force-push] Push with --force-with-lease, or open a pull request.
+```
+
+The Bash grammar sometimes reads a script differently from bash. A file with one of those constructs can't be classified, so the check exits 2 when the pattern matches in it. The constructs are a heredoc not closed by its exact delimiter line, a backquoted substitution, a carriage return, and a `#` after a line continuation. For example, `[scripts/no-force-push] scripts/release.sh: ignoreInside cannot classify the match: bash may end this heredoc elsewhere than the bash grammar near 1:5; …`. The [authoring guide](../authoring/#shell-scripts) lists each case and why it can't be classified.
 
 ## Say what each finding matched
 
