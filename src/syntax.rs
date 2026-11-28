@@ -5,7 +5,7 @@
 //! against it when the policy loads. Matching is one pass over the tree, so
 //! its cost grows with file size, not nesting depth.
 use crate::policy::{Result, Span};
-use regex::{Regex, RegexBuilder};
+use regex::Regex;
 use serde::Deserialize;
 use std::collections::HashSet;
 use tree_sitter::{Language, Node, Parser, Tree};
@@ -52,6 +52,7 @@ pub struct SyntaxMatcher {
     node: String,
     inside: Option<(Vec<String>, Option<String>)>,
     ignore: Vec<Filter>,
+    dialect_note: Option<String>,
 }
 
 enum Filter {
@@ -142,11 +143,16 @@ impl Selector {
             }
         };
 
+        let mut dialect_note = None;
         let ignore = match self.ignore {
             None => Vec::new(),
             Some(filters) if (1..=MAX_NAMES).contains(&filters.len()) => filters
                 .into_iter()
-                .map(TextFilter::compile)
+                .map(|filter| {
+                    let (filter, note) = filter.compile()?;
+                    dialect_note = dialect_note.take().or(note);
+                    Ok(filter)
+                })
                 .collect::<Result<_>>()?,
             Some(_) => return Err("provide 1 to 16 selector ignore filters or omit ignore".into()),
         };
@@ -156,12 +162,13 @@ impl Selector {
             node: self.node,
             inside,
             ignore,
+            dialect_note,
         })
     }
 }
 
 impl TextFilter {
-    fn compile(self) -> Result<Filter> {
+    fn compile(self) -> Result<(Filter, Option<String>)> {
         let value = match &self {
             Self::Literal { value } | Self::Regex { value } => value,
         };
@@ -169,13 +176,9 @@ impl TextFilter {
             return Err("use a selector ignore value of 1 to 4096 bytes".into());
         }
         match self {
-            Self::Literal { value } => Ok(Filter::Literal(value)),
-            Self::Regex { value } => RegexBuilder::new(&value)
-                .nest_limit(64)
-                .size_limit(256 * 1024)
-                .dfa_size_limit(128 * 1024)
-                .build()
-                .map(Filter::Regex)
+            Self::Literal { value } => Ok((Filter::Literal(value), None)),
+            Self::Regex { value } => crate::dialect::compile(&value)
+                .map(|compiled| (Filter::Regex(compiled.regex), compiled.note))
                 .map_err(|err| format!("invalid selector ignore regex: {err}")),
         }
     }
@@ -191,6 +194,11 @@ impl Filter {
 }
 
 impl SyntaxMatcher {
+    /// How JavaScript would read the first ignore regex that it reads differently.
+    pub fn dialect_note(&self) -> Option<&str> {
+        self.dialect_note.as_deref()
+    }
+
     /// The byte range of the first selected node in document order. A file the
     /// grammar cannot parse without errors cannot be judged.
     ///

@@ -3,7 +3,7 @@ title: CLI reference
 description: Rulecheck commands, exit codes, and scan scope.
 ---
 
-The installed `rulecheck` command builds policy from `.rulecheck/rules/**/*.rule.ts` in the selected checkout and pipes it to the evaluator. `--root DIR` picks the checkout root, which defaults to the current directory. Run from the checkout root or pass `--root`: a subdirectory exits 2 and the message names the root to pass. `--commit SHA` reads rules and files from a full commit instead. `--untracked` adds untracked files that Git doesn't ignore to a working-tree check. `--all-matches` makes `check` report every text match instead of the first per rule and file; see [Every match](#every-match). `--text-budget MIB` sets how much scoped text one `check` reads; see [Scan budget](#scan-budget). `--baseline FILE` compares finding counts with a committed baseline; see [Baselines](../baselines/).
+The installed `rulecheck` command builds policy from `.rulecheck/rules/**/*.rule.ts`, plus any [exclusion sets](../authoring/#named-exclusion-sets) in `.rulecheck/sets/**/*.set.ts`, in the selected checkout and pipes it to the evaluator. `--root DIR` picks the checkout root, which defaults to the current directory. Run from the checkout root or pass `--root`: a subdirectory exits 2 and the message names the root to pass. `--commit SHA` reads rules and files from a full commit instead. `--untracked` adds untracked files that Git doesn't ignore to a working-tree check. `--all-matches` makes `check` report every text match instead of the first per rule and file; see [Every match](#every-match). `--text-budget MIB` sets how much scoped text one `check` reads; see [Scan budget](#scan-budget). `--baseline FILE` compares finding counts with a committed baseline; see [Baselines](../baselines/).
 
 | Command | Purpose |
 | --- | --- |
@@ -32,7 +32,7 @@ rulecheck build: .rulecheck/rules/demo.rule.ts:16:26: Unknown property col in fi
 rulecheck: could not build policy from /path/to/checkout/.rulecheck/rules
 ```
 
-The evaluator still checks limits, rule IDs, globs, regex syntax, and syntax selector node kinds and fields. Those messages name the rule ID, such as `[config/no-legacy-mode] invalid regex: …`.
+The evaluator still checks limits, rule IDs, globs, regex syntax, and syntax selector node kinds and fields. Those messages name the rule ID, such as `[config/no-legacy-mode] invalid regex: …`. Regexes use the Rust dialect. When a JavaScript-only construct such as look-around stops one compiling, the message ends with a `hint:` line ([porting reference](../authoring/#port-a-javascript-regex)).
 
 `--commit` takes a full 40- or 64-character SHA. A short SHA or `HEAD` is an argument error: it exits 2 with one usage line and, with `--format json`, no result document. Resolve it first:
 
@@ -60,6 +60,7 @@ The matches are deterministic, and the working tree and `--commit` report the sa
 - **Zero-width regex matches** such as `(?m)^` or `\b` are reported, with `byteStart` equal to `byteEnd`. An empty match never splits a UTF-8 character. An empty match that starts where the previous match ended is skipped, so `a*` on `baaab` reports columns 1 (empty), 2 (`aaa`) and 6 (empty at the end), not an empty match at column 5.
 - **Positions** are the same as in first-match mode: a one-based line and Unicode scalar column, plus the zero-based, half-open UTF-8 byte range in JSON. The first all-match finding of a rule in a file is always the finding that first-match mode reports.
 - **Order** is path, then line and column, then rule ID, as in first-match mode. When two rules match at the same position, both are listed in rule ID order.
+- **Rules with `requires`** report every match of their `pattern` in a file where `requires` matches nowhere, and no match in a file where it matches anywhere. See [require text in the same file](../cookbook/#require-text-in-the-same-file).
 - **Forbidden-path rules** still report at most one finding per path, at `1:1`.
 - **Syntax rules** are not counted yet. Rulecheck hasn't defined how nested or repeated nodes would be counted, and reporting only their first match would undercount. If any selected rule is a syntax rule, `--all-matches` exits 2 before reading files and names the rule. Select only text and forbidden-path rules with `--id-prefix`, or drop the flag.
 - **The findings cap** is still 10,000 per scan. A scan with more matches exits 2 with no findings listed, so narrow the scope instead of reading a partial count.
@@ -107,7 +108,7 @@ A partial result is never a pass, and it is never a complete list of findings. D
 | One `--id-prefix pkgN/` run per package, default budget | 4 | 4 | 80 MiB (20 MiB per run) | 4.5 s |
 | One run with `--text-budget 80` | 1 | 1 | 80 MiB | 1.7 s |
 
-Both report the same 4 findings. Each file is read once either way, so the scan volume is the same. The difference is the per-run cost of starting Node.js and the builder, which grows with the number of prefixes. Times vary by machine, and the script prints its own measurements. Use `--packages`, `--mib` and `--runs` to change the snapshot.
+Both report the same 4 findings. Each file is read once either way, so the scan volume is the same. The difference is the per-run cost of starting Node.js and the builder, which grows with the number of prefixes. Times vary by machine, and the script prints its own measurements. Use `--packages`, `--mib` and `--runs` to change the snapshot. To time `check --baseline` on a repository with existing findings and rules that share files, use the [adoption pilot](../baselines/#pilot-an-adoption).
 
 ## Machine-readable results
 
@@ -150,8 +151,8 @@ The contract:
 - `resultVersion` is 1. It versions this document separately from the policy `version`. Reject a version you don't know.
 - `exitCode` always equals the process exit status, and `outcome` names it: `pass` (0), `violation` (1) or `error` (2).
 - Findings are sorted by path, then line and column, then rule ID. `line` and `column` are the one-based values from human output, with columns counted in Unicode scalar values. `byteStart` and `byteEnd` are the zero-based, half-open UTF-8 byte range of the match, so `file[byteStart..byteEnd]` is the matched text. By default that is the rule's first match in the file; with `--all-matches` there is one finding per match. Forbidden-path findings have no text and report `null` for both.
-- `diagnostics` lists each reason the check could not judge, as `{ ruleId, message }`. `ruleId` is set for an empty text scope and `null` otherwise. Any diagnostic makes the outcome `error`.
-- After an empty text scope, the findings for the other rules are complete and still listed. When a scan stops early on an unreadable file or an input limit such as the per-file or findings cap, `findings` is empty. Never treat an `error` result as clean.
+- `diagnostics` lists each reason the check could not judge, as `{ ruleId, message }`. `ruleId` is set for an empty text scope, a forbidden-path rule with a [missing anchor](../cookbook/#forbidden-path-with-an-anchor) and a rule not evaluated before a budget stop, and each kind ends with one summary diagnostic with `ruleId: null`. Other errors have `ruleId: null` only. Any diagnostic makes the outcome `error`.
+- After an empty text scope or a missing anchor, the findings are complete and still listed. When a scan stops early on an unreadable file or an input limit such as the per-file or findings cap, `findings` is empty. Never treat an `error` result as clean.
 - When the scan stopped at the [text budget](#scan-budget), the result also has a `partial` object, and only then. `partial.reason` is `"text-budget"`. `textBudgetBytes` is the budget, `textBytesEvaluated` is the scoped text evaluated before the stop, `stoppedAt` is the file that didn't fit, and `unevaluatedRuleIds` lists, in policy order, the rules not evaluated on every file in scope. Each of those rules also has a diagnostic, and a final diagnostic with `ruleId: null` explains the stop. `findings` holds the findings from before the stop. The outcome is `error` and `exitCode` is 2, so a consumer that predates `partial` still treats the result as unjudged.
 - `policy.sha256` is the SHA-256 of the exact policy bytes the evaluator read. It is `null` when the policy could not be read. It differs from the shadow evidence's effective-policy digest, which hashes a canonical form. `policy.version` is `null` when the policy is invalid. `policy.ruleIds` lists the rules selected after `--id-prefix`.
 - `source.mode` is `commit` with the exact `--commit` SHA, or `working-tree` with `commit: null`. A working-tree scan includes unstaged edits, so no commit describes it exactly. `source.untracked` is `true` when `--untracked` was passed and absent otherwise, so results without the flag keep the shape shown above. `source.matches` is `"all"` when `--all-matches` was passed and absent otherwise. `source.textBudgetMiB` is the `--text-budget` value when it was passed and absent otherwise, which means 64.
@@ -181,7 +182,7 @@ The builder, the installed command, the evaluator and `schema/policy-v1.json` sh
 rulecheck build: .rulecheck/rules: more than 1024 .rule.ts files; a policy holds at most 1024 rules
 ```
 
-The other limits don't grow with the rule count. The 10,000-finding limit and the text budget apply to the whole scan, not to each rule, and a file in the scope of many rules is read and counted once. Syntax rules that apply to the same file share one parse. Each rule still has its own limits: 16 path and 16 exclude globs, 64 fixtures, and a pattern of up to 4096 bytes. A regex compiles to at most 256 KiB, so 1024 regex rules with the most complex patterns can take a few hundred MiB of memory. Prefer literal patterns and a few narrow regexes.
+The other limits don't grow with the rule count. The 10,000-finding limit and the text budget apply to the whole scan, not to each rule, and a file in the scope of many rules is read and counted once. Syntax rules that apply to the same file share one parse. The policy as a whole has at most 4096 path and exclusion globs after [exclusion sets](../authoring/#reusable-exclusion-sets-and-content-skips) are resolved, which bounds the matching work per path, so 1024 rules average at most 4 globs each. Each rule still has its own limits: 64 path and 64 exclude globs, 64 fixtures, and a pattern of up to 4096 bytes. A regex compiles to at most 256 KiB, so 1024 regex rules with the most complex patterns can take a few hundred MiB of memory. Prefer literal patterns and a few narrow regexes.
 
 ### Large policies
 
@@ -206,7 +207,7 @@ Without `--commit`, the candidate files are the regular files in the Git index, 
 
 - Changes to tracked files are scanned without staging, including tracked files that match `.gitignore`.
 - Untracked files are not scanned, whether ignored or not. Run `git add` first, or pass `--untracked`.
-- A tracked file deleted from the working tree or the index is skipped. If that leaves a text rule with no files in scope, the check exits 2.
+- A tracked file deleted from the working tree or the index is skipped. If that leaves a text rule with no files in scope, the check exits 2. A deleted file doesn't count as a forbidden-path anchor either.
 - Git symlinks and submodules are skipped. A scoped path that is now a directory, FIFO, or other non-regular file, or that sits under a symlinked directory, exits 2.
 
 With `--untracked`, the candidates also include the untracked files that Git doesn't ignore, as listed by `git ls-files --others --exclude-standard`. They are checked the same way as index files:
@@ -218,9 +219,11 @@ With `--untracked`, the candidates also include the untracked files that Git doe
 
 With `--commit SHA`, the candidate files are the commit's tree, and the index and working tree are ignored. A scoped symlink or submodule exits 2.
 
+A forbidden-path rule with `anchors` also needs at least one candidate file that matches an anchor, or the check exits 2 for that rule. Anchors are matched against the same candidates in both modes, so a moved or deleted directory exits 2 in the working tree and at the exact commit. Anchors are only checked for presence: their text is not read and doesn't count toward the text budget, and they are still checked after a budget stop. A symlink can't be an anchor. The working tree skips it, so the anchor is missing, and `--commit` exits 2 for a scoped symlink. Without `anchors`, a forbidden-path rule that matches no file passes, as in every earlier release.
+
 ## Rule sources
 
-Every entry under `.rulecheck/rules` must be a regular file or a real directory, in both modes. Without `--commit`, a symlink, FIFO, socket, device, or symlinked directory there exits 2 with an error that names the path, even if its name doesn't end in `.rule.ts`. With `--commit SHA`, any entry that is not a regular blob or a tree exits 2 the same way. This keeps a rule from silently dropping out of the policy. Without `--commit`, nested Git repositories and submodules under `.rulecheck/rules` are skipped; in a commit a submodule there exits 2. Regular files that don't end in `.rule.ts` are ignored.
+Every entry under `.rulecheck/rules` must be a regular file or a real directory, in both modes. Without `--commit`, a symlink, FIFO, socket, device, or symlinked directory there exits 2 with an error that names the path, even if its name doesn't end in `.rule.ts`. With `--commit SHA`, any entry that is not a regular blob or a tree exits 2 the same way. This keeps a rule from silently dropping out of the policy. Without `--commit`, nested Git repositories and submodules under `.rulecheck/rules` are skipped; in a commit a submodule there exits 2. Regular files that don't end in `.rule.ts` are ignored. The optional `.rulecheck/sets` directory follows the same entry rules, must itself be a real directory, and loads files that end in `.set.ts`. Sets always come from the same place as the rules: the disk without `--commit`, the commit's tree with it.
 
 Without `--commit`, the builder reads `.rulecheck/rules` from disk, not from the Git index. An untracked `.rule.ts` file there is loaded as a rule whether or not you pass `--untracked`, even though, without the flag, untracked files are not scan candidates. Commit or delete experimental rule files before relying on a clean working-tree check, or use `--commit` to check exactly what is committed.
 

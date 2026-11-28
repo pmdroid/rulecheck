@@ -1,10 +1,11 @@
+use crate::dialect;
 use crate::syntax::{Selector, SyntaxMatcher, Trees};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
-use regex::{Regex, RegexBuilder};
+use regex::Regex;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 
 pub const MAX_FILE: usize = 1024 * 1024;
@@ -12,6 +13,25 @@ pub const MAX_FILE: usize = 1024 * 1024;
 /// `maxPolicy` in bin/rulecheck.mjs and `maxItems` in schema/policy-v1.json.
 const MAX_POLICY: usize = 4 * 1024 * 1024;
 const MAX_RULES: usize = 1024;
+/// Inline `paths` and `exclude` globs per rule. Measured with globset 0.4.22, a
+/// set's match cost grows about linearly with its glob count (about 0.16 µs per
+/// path at 16 globs, 0.28 µs at 64 and 0.86 µs at 256), so the caps below bound
+/// glob counts per rule and per policy rather than per list alone.
+const MAX_INLINE_GLOBS: usize = 64;
+/// Named exclusion sets per policy, and globs listed in one set.
+const MAX_SETS: usize = 64;
+const MAX_SET_GLOBS: usize = 256;
+/// Sets one rule or set may reference.
+const MAX_SET_REFERENCES: usize = 16;
+/// A rule's reference to a set is depth 1; each `include` adds one.
+const MAX_SET_DEPTH: usize = 4;
+/// Distinct exclusion globs of one rule after resolving its sets.
+const MAX_RESOLVED_EXCLUDE: usize = 256;
+/// Scope and exclusion globs summed over every rule of a policy after
+/// resolution, which bounds total matching work at about 4096 globs per path.
+const MAX_POLICY_GLOBS: usize = 4096;
+/// The longest file prefix that `skipIfContent` reads.
+const MAX_SKIP_PREFIX: usize = 64 * 1024;
 const MAX_PROVENANCE_URL: usize = 2048;
 pub type Result<T> = std::result::Result<T, String>;
 
@@ -19,7 +39,22 @@ pub type Result<T> = std::result::Result<T, String>;
 #[serde(deny_unknown_fields)]
 struct Policy {
     version: u32,
+    #[serde(default, deserialize_with = "present")]
+    sets: Option<Vec<SetSource>>,
     rules: Vec<Rule>,
+}
+
+/// A named, reusable list of exclusion globs. The builder reads it as static
+/// data from `.rulecheck/sets/<name>.set.ts` in the same worktree or commit as
+/// the rules; nothing in it runs.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetSource {
+    name: String,
+    version: u32,
+    globs: Vec<String>,
+    #[serde(default, deserialize_with = "present")]
+    include: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -30,9 +65,17 @@ struct Rule {
     paths: Vec<String>,
     #[serde(default, deserialize_with = "present")]
     exclude: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "present")]
+    anchors: Option<Vec<String>>,
+    #[serde(default, rename = "excludeSets", deserialize_with = "present")]
+    exclude_sets: Option<Vec<String>>,
+    #[serde(default, rename = "skipIfContent", deserialize_with = "present")]
+    skip_if_content: Option<SkipIfContent>,
     remediation: String,
     #[serde(default, deserialize_with = "present")]
     pattern: Option<Pattern>,
+    #[serde(default, deserialize_with = "present")]
+    requires: Option<Pattern>,
     #[serde(default, deserialize_with = "present")]
     selector: Option<Selector>,
     #[serde(default, deserialize_with = "present")]
@@ -46,6 +89,24 @@ struct Rule {
 #[serde(deny_unknown_fields)]
 struct Provenance {
     finding: String,
+}
+
+/// Skips a file whose first `firstBytes` bytes contain a literal or match a
+/// regex, such as a generated-file header.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SkipIfContent {
+    kind: PatternKind,
+    value: String,
+    #[serde(rename = "firstBytes")]
+    first_bytes: usize,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum PatternKind {
+    Literal,
+    Regex,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -106,11 +167,25 @@ pub struct CompiledRule {
     pub remediation: String,
     pub scope: GlobSet,
     pub exclude: GlobSet,
+    /// Forbidden-path rules only: globs for files that must exist for an
+    /// absent forbidden path to count as clean. `None` keeps the v1 default,
+    /// where no matching file is always a pass.
+    pub anchors: Option<GlobSet>,
+    pub skip: Option<ContentSkip>,
     pub matcher: Matcher,
     /// Digest of what decides the matches inside one file (see `matcher_digest`).
     /// A baseline entry recorded under another digest is incompatible.
     pub matcher_digest: String,
     pub fixtures: Vec<Fixture>,
+    /// How JavaScript would read this rule's regex differently, shown when a
+    /// fixture fails. Matching never uses it.
+    pub dialect_note: Option<String>,
+}
+
+/// A compiled `skipIfContent`: a byte regex run on a bounded file prefix.
+pub struct ContentSkip {
+    regex: regex::bytes::Regex,
+    first_bytes: usize,
 }
 
 pub enum Matcher {
@@ -118,6 +193,12 @@ pub enum Matcher {
     Regex(Regex),
     ForbiddenPath,
     Syntax(SyntaxMatcher),
+    /// A text rule with `requires`: the trigger's matches are findings only
+    /// when the requirement matches nowhere in the same file.
+    Requires {
+        trigger: Box<Matcher>,
+        requirement: Box<Matcher>,
+    },
 }
 
 pub(crate) fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
@@ -147,8 +228,9 @@ pub fn valid_rule_id(id: &str) -> bool {
         })
 }
 
-/// `sha256:` over the canonical JSON of a rule's `kind`, `pattern` and
-/// `selector`, which decide what matches inside one file. The ID, scope,
+/// `sha256:` over the canonical JSON of a rule's `kind`, `pattern`,
+/// `requires` and `selector`, which decide what matches inside one file. The ID, scope
+/// (including `excludeSets` and `skipIfContent`, which only take whole files out),
 /// remediation, provenance and fixtures are left out: none of them changes the
 /// count in a file that stays in scope, and a file that enters the scope has
 /// no baseline allowance. The `counting` version changes whenever Rulecheck's
@@ -156,7 +238,7 @@ pub fn valid_rule_id(id: &str) -> bool {
 fn matcher_digest(rule: &Value) -> String {
     let mut semantics = serde_json::Map::new();
     semantics.insert("counting".into(), Value::from(1));
-    for key in ["kind", "pattern", "selector"] {
+    for key in ["kind", "pattern", "requires", "selector"] {
         if let Some(value) = rule.get(key) {
             semantics.insert(key.into(), value.clone());
         }
@@ -225,6 +307,8 @@ pub fn load(bytes: &[u8]) -> Result<Vec<CompiledRule>> {
     if !(1..=MAX_RULES).contains(&policy.rules.len()) {
         return Err(format!("policy must have 1 to {MAX_RULES} rules"));
     }
+    let sets = Sets::new(policy.sets.unwrap_or_default())?;
+    let mut policy_globs = 0;
 
     // The typed parse above accepted the document, so the raw rules line up with it.
     let raw: Value =
@@ -244,7 +328,9 @@ pub fn load(bytes: &[u8]) -> Result<Vec<CompiledRule>> {
             return Err(format!("[{}] duplicate rule ID", rule.id));
         }
         let id = rule.id.clone();
-        let mut rule = rule.compile().map_err(|err| format!("[{id}] {err}"))?;
+        let mut rule = rule
+            .compile(&sets, &mut policy_globs)
+            .map_err(|err| format!("[{id}] {err}"))?;
         rule.matcher_digest = matcher_digest(raw);
         compiled.push(rule);
     }
@@ -253,7 +339,7 @@ pub fn load(bytes: &[u8]) -> Result<Vec<CompiledRule>> {
 }
 
 impl Rule {
-    fn compile(self) -> Result<CompiledRule> {
+    fn compile(self, sets: &Sets, policy_globs: &mut usize) -> Result<CompiledRule> {
         if self.remediation.trim().is_empty()
             || self.remediation.len() > 512
             || self.remediation.chars().any(char::is_control)
@@ -269,20 +355,91 @@ impl Rule {
             ));
         }
 
-        if !(1..=16).contains(&self.paths.len()) {
-            return Err("provide 1 to 16 path globs".into());
+        if !(1..=MAX_INLINE_GLOBS).contains(&self.paths.len()) {
+            return Err(format!("provide 1 to {MAX_INLINE_GLOBS} path globs"));
         }
         let scope = globs("path", &self.paths)?;
-        let exclude = match &self.exclude {
-            None => GlobSet::empty(),
-            Some(exclude) if (1..=16).contains(&exclude.len()) => globs("exclude", exclude)?,
-            Some(_) => return Err("provide 1 to 16 exclude globs or omit exclude".into()),
+        // Inline globs come first, then each set in the order listed, each
+        // glob kept once. Exclusion has no precedence: a path matching any
+        // resolved glob is out of scope.
+        let mut excluded = Vec::new();
+        match &self.exclude {
+            None => {}
+            Some(exclude) if (1..=MAX_INLINE_GLOBS).contains(&exclude.len()) => {
+                excluded.extend(exclude.iter().map(String::as_str));
+            }
+            Some(_) => {
+                return Err(format!(
+                    "provide 1 to {MAX_INLINE_GLOBS} exclude globs or omit exclude"
+                ));
+            }
+        }
+        if let Some(names) = &self.exclude_sets {
+            references("excludeSets", names)?;
+            let mut visited = BTreeSet::new();
+            for name in names {
+                sets.resolve(name, &mut visited, &mut excluded)?;
+            }
+        }
+        let mut seen = BTreeSet::new();
+        excluded.retain(|glob| seen.insert(*glob));
+        if excluded.len() > MAX_RESOLVED_EXCLUDE {
+            return Err(format!(
+                "excludes {} distinct globs after resolving excludeSets; use at most {MAX_RESOLVED_EXCLUDE}",
+                excluded.len()
+            ));
+        }
+        *policy_globs += self.paths.len() + excluded.len();
+        if *policy_globs > MAX_POLICY_GLOBS {
+            return Err(format!(
+                "the policy uses more than {MAX_POLICY_GLOBS} path and exclusion globs across all rules; share fewer, broader globs"
+            ));
+        }
+        let exclude = globs("exclude", &excluded)?;
+        let anchors = match (&self.anchors, self.kind) {
+            (None, _) => None,
+            (Some(_), Kind::Text | Kind::Syntax) => {
+                return Err(
+                    "anchors apply to forbidden-path rules only; text and syntax rules \
+                     already exit 2 when no file is in scope"
+                        .into(),
+                );
+            }
+            (Some(anchors), Kind::ForbiddenPath) if (1..=16).contains(&anchors.len()) => {
+                Some(globs("anchor", anchors)?)
+            }
+            (Some(_), Kind::ForbiddenPath) => {
+                return Err("provide 1 to 16 anchor globs or omit anchors".into());
+            }
         };
 
-        let matcher = match (self.kind, self.pattern, self.selector) {
-            (Kind::Text, Some(pattern), None) => Matcher::compile(pattern)?,
-            (Kind::ForbiddenPath, None, None) => Matcher::ForbiddenPath,
-            (Kind::Syntax, None, Some(selector)) => Matcher::Syntax(selector.compile()?),
+        if self.requires.is_some() && !matches!(self.kind, Kind::Text) {
+            return Err(
+                "only text rules take requires; it names text that must appear in the same file"
+                    .into(),
+            );
+        }
+        let (matcher, dialect_note) = match (self.kind, self.pattern, self.selector) {
+            (Kind::Text, Some(pattern), None) => {
+                let (trigger, note) = Matcher::compile(pattern)?;
+                match self.requires {
+                    None => (trigger, note),
+                    Some(requires) => {
+                        let (requirement, required_note) = Matcher::requirement(requires)?;
+                        let matcher = Matcher::Requires {
+                            trigger: Box::new(trigger),
+                            requirement: Box::new(requirement),
+                        };
+                        (matcher, note.or(required_note))
+                    }
+                }
+            }
+            (Kind::ForbiddenPath, None, None) => (Matcher::ForbiddenPath, None),
+            (Kind::Syntax, None, Some(selector)) => {
+                let selector = selector.compile()?;
+                let note = selector.dialect_note().map(str::to_owned);
+                (Matcher::Syntax(selector), note)
+            }
             _ => {
                 return Err(
                     "text rules require a pattern, syntax rules require a selector, \
@@ -290,6 +447,17 @@ impl Rule {
                         .into(),
                 );
             }
+        };
+
+        let skip = match self.skip_if_content {
+            None => None,
+            Some(_) if !matcher.needs_text() => {
+                return Err(
+                    "skipIfContent needs a text or syntax rule; forbidden-path rules never read content"
+                        .into(),
+                );
+            }
+            Some(skip) => Some(ContentSkip::compile(skip)?),
         };
 
         if !(1..=64).contains(&self.fixtures.len()) {
@@ -335,6 +503,13 @@ impl Rule {
             {
                 return Err(format!("{path}: fixture uses one-based locations"));
             }
+            // A forbidden path that is also an anchor could never be clean.
+            if !locations.is_empty() && anchors.as_ref().is_some_and(|set| set.is_match(&path)) {
+                return Err(format!(
+                    "{path}: a forbidden path must not match the rule's anchors; anchor a file \
+                     that should always exist next to it"
+                ));
+            }
             fixtures.push(Fixture {
                 path,
                 content: fixture.content,
@@ -349,7 +524,10 @@ impl Rule {
             matcher_digest: String::new(),
             scope,
             exclude,
+            anchors,
+            skip,
             fixtures,
+            dialect_note,
         })
     }
 }
@@ -362,9 +540,188 @@ fn valid_provenance_url(url: &str) -> bool {
     }) && url.chars().count() <= MAX_PROVENANCE_URL
 }
 
-fn globs(field: &str, patterns: &[String]) -> Result<GlobSet> {
+/// Checks a list of set names: 1 to 16 distinct, known-shape names.
+fn references(field: &str, names: &[String]) -> Result<()> {
+    if !(1..=MAX_SET_REFERENCES).contains(&names.len()) {
+        return Err(format!(
+            "provide 1 to {MAX_SET_REFERENCES} set names in {field} or omit it"
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    for name in names {
+        if !seen.insert(name) {
+            return Err(format!("{field} lists set {name:?} twice"));
+        }
+    }
+    Ok(())
+}
+
+fn valid_name(name: &str) -> bool {
+    name.len() <= 128
+        && name.split('/').all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+        })
+}
+
+/// The policy's named exclusion sets, validated when the policy loads.
+struct Sets(BTreeMap<String, SetSource>);
+
+impl Sets {
+    fn new(sources: Vec<SetSource>) -> Result<Self> {
+        if sources.len() > MAX_SETS {
+            return Err(format!("policy must have at most {MAX_SETS} sets"));
+        }
+        let mut sets = BTreeMap::new();
+        for set in sources {
+            let name = set.name.clone();
+            let context = |err: String| format!("set {name:?}: {err}");
+            if !valid_name(&name) {
+                return Err(context(
+                    "invalid set name; use lowercase letters, digits, hyphens and slashes".into(),
+                ));
+            }
+            if set.version != 1 {
+                return Err(context(format!(
+                    "unsupported set version {}; use version 1",
+                    set.version
+                )));
+            }
+            if set.globs.len() > MAX_SET_GLOBS {
+                return Err(context(format!("list at most {MAX_SET_GLOBS} globs")));
+            }
+            if set.globs.is_empty() && set.include.is_none() {
+                return Err(context("list globs or include another set".into()));
+            }
+            // Compiling validates each glob before any rule uses the set.
+            globs("exclude", &set.globs).map_err(context)?;
+            if let Some(include) = &set.include {
+                references("include", include).map_err(context)?;
+            }
+            if sets.insert(name.clone(), set).is_some() {
+                return Err(context("duplicate set name".into()));
+            }
+        }
+        let sets = Self(sets);
+        let mut heights = BTreeMap::new();
+        for name in sets.0.keys() {
+            sets.height(name, &mut Vec::new(), &mut heights)?;
+        }
+        Ok(sets)
+    }
+
+    /// The longest include chain from `name`, counting `name` as 1. Every set
+    /// is checked, used or not, so a cycle, an unknown include or a chain
+    /// deeper than a rule may reference fails when the policy loads.
+    fn height<'s>(
+        &'s self,
+        name: &'s str,
+        chain: &mut Vec<&'s str>,
+        heights: &mut BTreeMap<&'s str, usize>,
+    ) -> Result<usize> {
+        let path = |chain: &[&str]| {
+            chain
+                .iter()
+                .chain([&name])
+                .map(|name| format!("{name:?}"))
+                .collect::<Vec<_>>()
+                .join(" -> ")
+        };
+        if chain.contains(&name) {
+            return Err(format!("set include cycle {}", path(chain)));
+        }
+        if let Some(height) = heights.get(name) {
+            return Ok(*height);
+        }
+        let Some((key, set)) = self.0.get_key_value(name) else {
+            let parent = chain.last().expect("top-level names come from the map");
+            return Err(format!("set {parent:?} includes unknown set {name:?}"));
+        };
+        chain.push(key);
+        let mut height = 1;
+        for include in set.include.iter().flatten() {
+            height = height.max(1 + self.height(include, chain, heights)?);
+        }
+        chain.pop();
+        if height > MAX_SET_DEPTH {
+            return Err(format!(
+                "set {name:?} nests includes deeper than {MAX_SET_DEPTH} levels"
+            ));
+        }
+        heights.insert(key, height);
+        Ok(height)
+    }
+
+    /// Appends the globs of `name`, then of each set it includes, depth first.
+    /// A set reached twice (a diamond) is expanded once.
+    fn resolve<'s>(
+        &'s self,
+        name: &str,
+        visited: &mut BTreeSet<&'s str>,
+        out: &mut Vec<&'s str>,
+    ) -> Result<()> {
+        let Some((key, set)) = self.0.get_key_value(name) else {
+            return Err(format!(
+                "unknown set {name:?} in excludeSets; add .rulecheck/sets/{name}.set.ts or fix the name"
+            ));
+        };
+        if !visited.insert(key) {
+            return Ok(());
+        }
+        out.extend(set.globs.iter().map(String::as_str));
+        for include in set.include.iter().flatten() {
+            self.resolve(include, visited, out)?;
+        }
+        Ok(())
+    }
+}
+
+impl ContentSkip {
+    fn compile(skip: SkipIfContent) -> Result<Self> {
+        if skip.value.is_empty() || skip.value.len() > 4096 {
+            return Err("use a skipIfContent value of 1 to 4096 bytes".into());
+        }
+        if !(1..=MAX_SKIP_PREFIX).contains(&skip.first_bytes) {
+            return Err(format!(
+                "skipIfContent.firstBytes must be 1 to {MAX_SKIP_PREFIX}"
+            ));
+        }
+        let pattern = match skip.kind {
+            PatternKind::Literal => regex::escape(&skip.value),
+            PatternKind::Regex => skip.value,
+        };
+        let regex = regex::bytes::RegexBuilder::new(&pattern)
+            .nest_limit(64)
+            .size_limit(256 * 1024)
+            .dfa_size_limit(128 * 1024)
+            .build()
+            .map_err(|err| {
+                format!(
+                    "invalid skipIfContent regex: {}",
+                    dialect::explain(&pattern, err)
+                )
+            })?;
+        Ok(Self {
+            regex,
+            first_bytes: skip.first_bytes,
+        })
+    }
+
+    /// Whether the first `firstBytes` bytes match. A literal or regex match
+    /// must lie wholly inside the prefix, which may end inside a character.
+    pub fn skips(&self, content: &str) -> bool {
+        let bytes = content.as_bytes();
+        self.regex
+            .is_match(&bytes[..bytes.len().min(self.first_bytes)])
+    }
+}
+
+fn globs(field: &str, patterns: &[impl AsRef<str>]) -> Result<GlobSet> {
     let mut set = GlobSetBuilder::new();
     for pattern in patterns {
+        let pattern = pattern.as_ref();
         if !valid_path(pattern) || pattern.len() > 256 {
             return Err(format!(
                 "invalid {field} glob {pattern:?}; use a relative slash-separated glob up to 256 bytes"
@@ -382,7 +739,7 @@ fn globs(field: &str, patterns: &[String]) -> Result<GlobSet> {
 }
 
 impl Matcher {
-    fn compile(pattern: Pattern) -> Result<Self> {
+    fn compile(pattern: Pattern) -> Result<(Self, Option<String>)> {
         let value = match &pattern {
             Pattern::Literal { value } | Pattern::Regex { value } => value,
         };
@@ -390,14 +747,36 @@ impl Matcher {
             return Err("use a pattern of 1 to 4096 bytes".into());
         }
         match pattern {
-            Pattern::Literal { value } => Ok(Self::Literal(value)),
-            Pattern::Regex { value } => RegexBuilder::new(&value)
-                .nest_limit(64)
-                .size_limit(256 * 1024)
-                .dfa_size_limit(128 * 1024)
-                .build()
-                .map(Self::Regex)
+            Pattern::Literal { value } => Ok((Self::Literal(value), None)),
+            Pattern::Regex { value } => dialect::compile(&value)
+                .map(|compiled| (Self::Regex(compiled.regex), compiled.note))
                 .map_err(|err| format!("invalid regex: {err}")),
+        }
+    }
+
+    /// A `requires` pattern. One that can match empty text would be met by
+    /// every file, so the rule could never report and is refused.
+    fn requirement(pattern: Pattern) -> Result<(Self, Option<String>)> {
+        let (matcher, note) = Self::compile(pattern).map_err(|err| format!("requires: {err}"))?;
+        if let Self::Regex(regex) = &matcher
+            && regex.is_match("")
+        {
+            return Err(
+                "requires: the regex can match empty text, so every file would meet the \
+                 requirement and the rule could never report; match at least one character"
+                    .into(),
+            );
+        }
+        Ok((matcher, note))
+    }
+
+    /// Whether the text contains any match. Only text matchers are used as
+    /// requirements.
+    fn is_met(&self, content: &str) -> bool {
+        match self {
+            Self::Literal(value) => content.contains(value.as_str()),
+            Self::Regex(regex) => regex.is_match(content),
+            _ => unreachable!("requirements are literal or regex patterns"),
         }
     }
 
@@ -436,6 +815,15 @@ impl Matcher {
             }),
             Self::Syntax(selector) => selector.find(path, content, trees)?,
             Self::ForbiddenPath => return Ok(Some((Location { line: 1, column: 1 }, None))),
+            Self::Requires {
+                trigger,
+                requirement,
+            } => {
+                // The requirement is searched only once the trigger matched.
+                return Ok(trigger
+                    .find(path, Some(content), trees)?
+                    .filter(|_| !requirement.is_met(content)));
+            }
         };
         Ok(span.map(|span| (locate(content, span.start), Some(span))))
     }
@@ -448,6 +836,7 @@ impl Matcher {
                  match would undercount",
             ),
             Self::ForbiddenPath => Some("forbidden-path rules report at most one finding per path"),
+            Self::Requires { trigger, .. } => trigger.all_matches_unsupported(),
             Self::Literal(_) | Self::Regex(_) => None,
         }
     }
@@ -457,7 +846,9 @@ impl Matcher {
     /// at the end of each match. Regex matches follow `Regex::find_iter`:
     /// leftmost-first and non-overlapping, empty matches included, except an
     /// empty match that starts where the previous match ended. A forbidden
-    /// path is one finding. Syntax rules are rejected before a scan starts.
+    /// path is one finding. With `requires`, every trigger match is a finding
+    /// when the requirement matches nowhere in the file, and none is when it
+    /// does. Syntax rules are rejected before a scan starts.
     pub fn find_all(
         &self,
         path: &str,
@@ -481,6 +872,19 @@ impl Matcher {
                     end: found.end(),
                 })
                 .collect(),
+            (
+                Self::Requires {
+                    trigger,
+                    requirement,
+                },
+                Some(text),
+            ) => {
+                let found = trigger.find_all(path, content, limit)?;
+                return Ok(match found.is_empty() || requirement.is_met(text) {
+                    true => Vec::new(),
+                    false => found,
+                });
+            }
             (Self::Syntax(_), _) => {
                 return Err(self.all_matches_unsupported().unwrap_or_default().into());
             }
@@ -527,7 +931,21 @@ fn locate(content: &str, start: usize) -> Location {
 }
 
 impl CompiledRule {
+    /// Whether a path is in scope: it matches `paths` and no inline or set
+    /// exclusion glob. Path checks never read content.
     pub fn applies_to(&self, path: &str) -> bool {
         self.scope.is_match(path) && !self.exclude.is_match(path)
+    }
+
+    /// Whether `path` is one of the files that show the guarded area exists.
+    pub fn anchored_by(&self, path: &str) -> bool {
+        self.anchors.as_ref().is_some_and(|set| set.is_match(path))
+    }
+
+    /// Whether `skipIfContent` drops a file that is in scope. It runs only on
+    /// content Rulecheck has read and decoded, so a file it cannot read is
+    /// never skipped: the scan still cannot judge it.
+    pub fn skips(&self, content: Option<&str>) -> bool {
+        matches!((&self.skip, content), (Some(skip), Some(content)) if skip.skips(content))
     }
 }

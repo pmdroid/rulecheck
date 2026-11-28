@@ -7,6 +7,12 @@
   "additionalProperties": false,
   "properties": {
     "version": { "const": 1 },
+    "sets": {
+      "description": "Named, reusable exclusion glob sets. The builder reads each from .rulecheck/sets/<name>.set.ts in the same worktree or commit as the rules.",
+      "type": "array",
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/set" }
+    },
     "rules": {
       "type": "array",
       "minItems": 1,
@@ -25,17 +31,52 @@
         "paths": {
           "type": "array",
           "minItems": 1,
-          "maxItems": 16,
+          "maxItems": 64,
           "items": { "type": "string", "minLength": 1, "maxLength": 256 }
         },
         "exclude": {
           "type": "array",
           "minItems": 1,
+          "maxItems": 64,
+          "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+        },
+        "anchors": {
+          "description": "Forbidden-path rules only. Globs for files that show the guarded area exists. When no file matches any anchor, the check cannot judge and exits 2. Without anchors, no matching forbidden path is always a pass.",
+          "type": "array",
+          "minItems": 1,
           "maxItems": 16,
           "items": { "type": "string", "minLength": 1, "maxLength": 256 }
         },
+        "excludeSets": {
+          "description": "Names of sets whose globs are added to exclude. A rule resolves at most 256 distinct exclusion globs.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/setName" }
+        },
+        "skipIfContent": {
+          "description": "Skips an in-scope file whose first firstBytes bytes contain a literal or match a regex. Text and syntax rules only. A file that cannot be read is never skipped.",
+          "type": "object",
+          "required": ["kind", "value", "firstBytes"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "enum": ["literal", "regex"] },
+            "value": { "type": "string", "minLength": 1, "maxLength": 4096 },
+            "firstBytes": { "type": "integer", "minimum": 1, "maximum": 65536 }
+          }
+        },
         "remediation": { "type": "string", "minLength": 1, "maxLength": 512 },
         "pattern": {
+          "type": "object",
+          "required": ["kind", "value"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "enum": ["literal", "regex"] },
+            "value": { "type": "string", "minLength": 1, "maxLength": 4096 }
+          }
+        },
+        "requires": {
+          "description": "Text rules only. Text that must appear somewhere in the same file when pattern matches: a file where pattern matches and requires does not reports each pattern match, and a file that also matches requires reports none. A regex that can match empty text is refused.",
           "type": "object",
           "required": ["kind", "value"],
           "additionalProperties": false,
@@ -68,7 +109,7 @@
       "then": {
         "required": ["pattern"],
         "not": { "required": ["selector"] },
-        "properties": { "fixtures": { "items": { "required": ["content"] } } }
+        "properties": { "anchors": { "not": {} }, "fixtures": { "items": { "required": ["content"] } } }
       },
       "else": {
         "if": { "properties": { "kind": { "const": "syntax" } } },
@@ -76,6 +117,8 @@
           "required": ["selector"],
           "not": { "required": ["pattern"] },
           "properties": {
+            "anchors": { "not": {} },
+            "requires": { "not": {} },
             "fixtures": { "items": { "required": ["content"], "properties": { "expectAll": { "not": {} } } } }
           }
         },
@@ -83,10 +126,34 @@
           "not": { "required": ["pattern"] },
           "properties": {
             "selector": { "not": {} },
+            "requires": { "not": {} },
+            "skipIfContent": { "not": {} },
             "fixtures": {
               "items": { "not": { "required": ["content"] }, "properties": { "expectAll": { "not": {} } } }
             }
           }
+        }
+      }
+    },
+    "setName": { "type": "string", "maxLength": 128, "pattern": "^[a-z0-9-]+(/[a-z0-9-]+)*$" },
+    "set": {
+      "description": "Includes nest at most 4 levels counting the set a rule names, and must not form a cycle.",
+      "type": "object",
+      "required": ["name", "version", "globs"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "$ref": "#/$defs/setName" },
+        "version": { "const": 1 },
+        "globs": {
+          "type": "array",
+          "maxItems": 256,
+          "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+        },
+        "include": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/setName" }
         }
       }
     },

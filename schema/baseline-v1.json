@@ -20,7 +20,7 @@
       "required": ["matcher", "paths"],
       "additionalProperties": false,
       "properties": {
-        "matcher": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "Digest of the rule's kind, pattern and selector when the counts were recorded. A rule whose digest differs cannot use these counts." },
+        "matcher": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "Digest of the rule's kind, pattern, requires and selector when the counts were recorded. A rule whose digest differs cannot use these counts." },
         "paths": {
           "type": "object",
           "description": "Keyed by normalized, slash-separated repository-relative path.",

@@ -111,7 +111,7 @@ None of these grants an allowance automatically:
 - **Renamed or moved files.** The baseline doesn't follow renames. A moved file's findings are at a new path with no allowance, so the check fails, and the old path's entry has 0 findings left. A pull request can't move the allowance with the file, because `base-check` uses the base commit's baseline. Fix the findings in the moved file before or while moving it. Otherwise only a later [baseline-only pull request](#raising-an-allowance) can record the new path.
 - **Removed rules.** A rule no longer in the policy is not checked. Its entry is stale. A normal check prints a note, and `--strict-baseline` fails until you regenerate the baseline.
 - **Renamed rule IDs.** Renaming is a removal plus a new rule. The new ID has no allowance, and the old ID's entry is stale.
-- **Changed match semantics.** Each entry records a `matcher` digest of the rule's `kind`, `pattern` and `selector`. If those change, the old counts no longer describe the rule, so the check exits 2 and names the rule. Regenerate that rule's entry in a reviewed pull request. Changes to the rule's paths, `exclude`, remediation, provenance or fixtures don't change what matches inside a file, so they keep the digest. A file that enters a wider scope has no allowance. A file that leaves the scope leaves a stale count that strict mode asks you to remove.
+- **Changed match semantics.** Each entry records a `matcher` digest of the rule's `kind`, `pattern`, `requires` and `selector`. If those change, the old counts no longer describe the rule, so the check exits 2 and names the rule. Regenerate that rule's entry in a reviewed pull request. Changes to the rule's paths, `exclude`, `excludeSets` or the sets it names, `skipIfContent`, remediation, provenance or fixtures don't change what matches inside a file, so they keep the digest. A set or a content skip only takes whole files out of scope. A file that enters a wider scope has no allowance. A file that leaves the scope leaves a stale count that strict mode asks you to remove.
 - **Rulecheck releases.** The digest also covers a counting version. A release that changes how matches are counted changes every digest, so existing baselines fail closed until they are regenerated.
 
 ## Invalid input fails closed
@@ -145,6 +145,26 @@ Normal pull requests can only lower allowances. Raising one, for example after a
 3. `proposed-owner-review` must pass on the exact head, even when the run wasn't otherwise set up to read reviews.
 
 `baselineChange.rebaseline` is `true` for these pull requests, and `raised` lists each allowance that went up for the reviewer.
+
+## Pilot an adoption
+
+`node tools/pilot.mjs` runs the whole adoption loop on a synthetic repository and checks the results against counts the script already knows. It needs `target/release/rulecheck-evaluator`, so run `cargo build --release` first. By default it creates 8 services of 12 text files each, 512 KiB per file, under `services/svc01/` to `services/svc08/`. Each service has three rules: a literal, a regex and a forbidden path. One more rule, `shared/no-inline-token`, covers every service. The script seeds existing findings at known lines. Some files have two or three findings of one rule, and some have findings of several rules. These expected counts are the oracle. Rulecheck's output is never used to build them.
+
+The script then checks the following, and exits 1 if any of them fails:
+
+- **Exact counts.** A single `check --all-matches`, one run per `--id-prefix`, and a `--commit` run must each report the oracle's count for every rule and path. The single run must also report the oracle's positions. `baseline` must record the same counts.
+- **Same-file addition.** On a file with two findings of one rule, a third finding fails `check --baseline` with that rule and path at 3 of 2 allowed.
+- **Incomplete scan.** With the third finding still present, `--text-budget 1` stops the scan. The check exits 2 with no baseline comparison. `baseline --write`, with or without `--id-prefix`, exits 2 and leaves the file unchanged. The next complete check still fails.
+- **Clean-up.** With one finding left in the file, the check passes and reports the count as loose, and `--strict-baseline` fails. After `baseline --write` the count for that path is 1, the other counts are unchanged, and the strict check passes. Adding the cleaned finding back then fails.
+
+It also times `check --baseline` through the installed wrapper in two ways: once as a single run, and once as one run per prefix (9 by default). Each way gets a cold run in a fresh clone, then `--runs` warm runs (default 3), and the script reports the median. A fresh clone doesn't clear the operating system's file cache, so a cold run here measures a new checkout, not a cold disk. The report includes the number of builder starts, counted from the Node.js processes that actually load `tools/build.mjs`, and the scoped text bytes each approach reads. One sample on an 8-core Linux runner, with 48 MiB of scoped text, 25 rules and 143 existing findings:
+
+| Approach | Invocations | Builder starts | Scoped text read | Cold | Warm (median) | Completed |
+| --- | --- | --- | --- | --- | --- | --- |
+| One run | 1 | 1 | 48 MiB | 0.6 s | 0.6 s | yes |
+| One run per prefix | 9 | 9 | 96 MiB | 5.7 s | 5.8 s | yes |
+
+The per-prefix runs read twice as much text because `shared/` scans every service again. `--time-budget-ms` (default 10000) sets the time a single run should take. The report says whether the cold and warm single runs meet it. A policy cache is only worth considering when they don't, and the script never writes a policy file. Use `--prefixes`, `--files` and `--file-kib` to change the snapshot. `tests/pilot.rs` runs a small version in `cargo test`.
 
 ## Result document
 

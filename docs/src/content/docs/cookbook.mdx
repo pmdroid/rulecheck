@@ -9,15 +9,23 @@ import regex from '../../../examples/rules/regex.rule.ts?raw';
 import path from '../../../examples/rules/path.rule.ts?raw';
 import scope from '../../../examples/rules/scope.rule.ts?raw';
 import exclude from '../../../examples/rules/exclude.rule.ts?raw';
+import exclusionSets from '../../../examples/rules/exclusion-sets.rule.ts?raw';
+import generatedSet from '../../../examples/sets/generated.set.ts?raw';
+import thirdPartySet from '../../../examples/sets/third-party.set.ts?raw';
 import ruleSources from '../../../examples/rules/rule-sources.rule.ts?raw';
 import multiScope from '../../../examples/rules/multi-scope.rule.ts?raw';
 import pathGlobs from '../../../examples/rules/path-globs.rule.ts?raw';
+import pathAnchors from '../../../examples/rules/path-anchors.rule.ts?raw';
 import syntax from '../../../examples/rules/syntax.rule.ts?raw';
 import syntaxReuse from '../../../examples/rules/syntax-reuse.rule.ts?raw';
 import syntaxRust from '../../../examples/rules/syntax-rust.rule.ts?raw';
 import syntaxGo from '../../../examples/rules/syntax-go.rule.ts?raw';
 import syntaxPython from '../../../examples/rules/syntax-python.rule.ts?raw';
 import allMatches from '../../../examples/rules/all-matches.rule.ts?raw';
+import requires from '../../../examples/rules/requires.rule.ts?raw';
+import regexBackreference from '../../../examples/rules/regex-backreference.rule.ts?raw';
+import regexLookahead from '../../../examples/rules/regex-lookahead.rule.ts?raw';
+import regexLookbehind from '../../../examples/rules/regex-lookbehind.rule.ts?raw';
 
 Rulecheck supports four matcher forms: **literal text**, **regex text**, **forbidden path**, and **syntax**. The first three recipes show the text and path forms, the middle recipes show how to control where a rule applies, and the [syntax recipes](#comments-in-function-bodies) select TypeScript, TSX, Rust, Go and Python syntax nodes. The code below comes from the same TypeScript files that CI runs. Copy a recipe into `.rulecheck/rules/` and adapt its ID, paths, and fixtures.
 
@@ -42,11 +50,52 @@ Match a line even when spacing varies. This example accepts optional whitespace 
 
 <Code code={regex} lang="ts" title="regex.rule.ts" />
 
+## Port a JavaScript regex
+
+Rust regex has no look-around and no backreferences, so a JavaScript pattern that uses them doesn't compile and exits 2 with a hint. Each recipe below starts from a JavaScript pattern in its comment and keeps its findings, apart from the limits it names. Its fixtures show where the rewrite and the original agree. The [porting reference](../authoring/#port-a-javascript-regex) lists the other differences, including nested classes and set operators.
+
+A backreference that matches the same quote twice becomes one alternative per quote style:
+
+<Code code={regexBackreference} lang="ts" title="regex-backreference.rule.ts" />
+
+A negative look-ahead that allows one method becomes a list of banned methods. The finding starts where it did, but a method the list doesn't name passes:
+
+<Code code={regexLookahead} lang="ts" title="regex-lookahead.rule.ts" />
+
+A negative look-behind becomes a group that consumes the character before the name. That character is part of the match, so the finding starts one column before the name. At the start of a line the group matches nothing, and the finding starts at the name:
+
+<Code code={regexLookbehind} lang="ts" title="regex-lookbehind.rule.ts" />
+
+When the condition is about where the text sits, such as in a comment, a string or a function body, use a [syntax rule](#comments-in-function-bodies).
+
 ## Forbidden path
 
 Stop a local-only path from entering Git. No `pattern` or fixture `content` is needed. A finding is always reported at line 1, column 1. No matching tracked regular file is a pass.
 
 <Code code={path} lang="ts" title="path.rule.ts" />
+
+## Forbidden path with an anchor
+
+A forbidden-path rule can't tell an absent file from an absent directory. If `services/billing/` is renamed, a rule for `services/billing/config/*.local.toml` keeps passing while the forbidden file lands at the new path. Add `anchors`: globs for files that always exist next to the forbidden ones. When the forbidden file is absent and an anchor exists, the check passes as before. When no file matches any anchor, the check can't judge the rule and exits 2.
+
+<Code code={pathAnchors} lang="ts" title="path-anchors.rule.ts" />
+
+The runner checks a clean checkout and then the forbidden file, as in the other recipes. Then it moves `services/billing` to `services/payments` and expects exit 2 from the working tree and from the exact commit, with no findings and this on stderr:
+
+```text
+[config/no-service-overrides] missing anchor: no file matches the rule's anchors, so the area it guards moved or vanished and an absent forbidden path proves nothing; restore the anchor or update anchors and paths together
+rulecheck: one or more forbidden-path rules found none of their anchors
+```
+
+Update `paths` and `anchors` together when you move the directory. Some rules have no natural anchor:
+
+- **Repository-root paths** such as `docker-compose.override.yml` in the [glob recipe](#exact-paths-and-advanced-globs). The root can't move, so there's nothing to anchor. Leave `anchors` out.
+- **Paths that are forbidden everywhere**, such as `**/*.pem` or `**/.env`. The rule guards no single directory, so an empty match is the clean result. Leave `anchors` out.
+- **A directory with no file that always exists.** Anchor the closest file that does, such as the package manifest one level up (`services/billing/package.json`). Don't add a placeholder file only to anchor the rule unless the team will keep it.
+
+An anchor must not match a fixture that expects a finding, because a forbidden file that is its own anchor could never pass. The builder and the evaluator reject `anchors` on text and syntax rules, which already exit 2 when no file is in their scope.
+
+`anchors` doesn't change the matcher digest, so a [baseline](../baselines/) recorded before you add it still applies. Rulecheck releases from before `anchors` reject a policy that uses it as an unknown field (exit 2). Before you add it, make sure every evaluator that checks the repository, including the trusted base tools in CI, is a release that supports it.
 
 ## Recursive scope and a negative control
 
@@ -59,6 +108,16 @@ The same marker appears in source and generated files, but only `src/` is in sco
 Use `exclude` to drop files from a broad scope. A file is checked when it matches `paths` and nothing in `exclude`. Fixtures use the same scope, so add a fixture for each excluded area. Both lists are case-sensitive, which means `src/Generated/` is still in scope here. If a scope such as `**/*.ts` would also cover the rule sources, add `.rulecheck/**` to `exclude`, as the [next recipe](#rule-sources-in-a-broad-scope) shows.
 
 <Code code={exclude} lang="ts" title="exclude.rule.ts" />
+
+## Shared exclusion sets and generated headers
+
+When several rules leave out the same generated or vendored files, put the globs in a named set under `.rulecheck/sets/` and list it in `excludeSets`. `generated` includes `third-party`, so this rule also leaves out `vendor/`. `skipIfContent` leaves out a file whose first line is a `// @generated` header, wherever it lives. A header after the first line doesn't match, because the regex has no `(?m)` flag. The runner copies both set files into the checkout's `.rulecheck/sets/`. See [exclusion sets and content skips](../authoring/#reusable-exclusion-sets-and-content-skips) for the order of checks and the limits.
+
+<Code code={generatedSet} lang="ts" title=".rulecheck/sets/generated.set.ts" />
+
+<Code code={thirdPartySet} lang="ts" title=".rulecheck/sets/third-party.set.ts" />
+
+<Code code={exclusionSets} lang="ts" title="exclusion-sets.rule.ts" />
 
 ## Rule sources in a broad scope
 
@@ -117,6 +176,20 @@ src/app.ts:2:11: [source/no-todo-markers] fixture 3 expected 2 violations at 1:4
 ```
 
 `expectAll` is for text rules. A forbidden-path rule reports at most one finding per path, and syntax rules aren't counted yet, so the builder and the evaluator reject `expectAll` there. The [CLI reference](../cli/#every-match) defines the match semantics for literal, regex and zero-width patterns.
+
+## Require text in the same file
+
+A text rule can be conditional: when its `pattern` matches a file, the file must also match `requires` somewhere. Here every file under `src/` that starts an interval must also clear one. The requirement can come before or after the trigger and on any line. Text in another file doesn't count.
+
+<Code code={requires} lang="ts" title="requires.rule.ts" />
+
+Findings point at the trigger, the `pattern` match, and never at the requirement. A file without a trigger is clean, and so is a file with both. A file with triggers and no requirement reports its first trigger by default, or every trigger with `--all-matches` and in a [baseline](../baselines/). The runner checks a clean checkout, then drops `clearInterval` from `src/poll.ts`. The working tree and the exact commit then both report:
+
+```text
+src/poll.ts:1:12: [source/interval-needs-clear] Keep the interval handle and call clearInterval when the work stops.
+```
+
+`requires` takes the same `{ kind, value }` as `pattern`, and only text rules have it. A regex requirement that can match empty text, such as `x*` or `(clearInterval\()?`, is refused when the policy loads, because every file would meet it and the rule could never report. The requirement is file-wide presence only. It doesn't tie a trigger to a nearby match or to the same function. A file whose text can't be read as UTF-8, or a scoped path that can't be read without following a symlink, exits 2 and doesn't count as meeting the requirement.
 
 ## Comments in function bodies
 

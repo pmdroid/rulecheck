@@ -4,7 +4,7 @@ description: Define, test, and retire a rule safely.
 ---
 
 1. Copy a tested rule from the Rule cookbook into `.rulecheck/rules/`. Nested directories work. Files must end in `.rule.ts`.
-2. Choose a stable lowercase ID such as `config/no-debug-true`, repository-relative `paths` globs, an optional `exclude` list for files to leave out, and a concrete remediation. Optionally link the review finding that led to the rule with [`provenance`](#record-where-a-rule-came-from).
+2. Choose a stable lowercase ID such as `config/no-debug-true`, repository-relative `paths` globs, an optional `exclude` list or [`excludeSets`](#reusable-exclusion-sets-and-content-skips) for files to leave out, and a concrete remediation. A forbidden-path rule for a path inside a directory that could move should also list [`anchors`](../cookbook/#forbidden-path-with-an-anchor), so the rule exits 2 instead of passing when the directory disappears. Optionally link the review finding that led to the rule with [`provenance`](#record-where-a-rule-came-from).
 3. Add at least one fixture that finds the bug and one that passes. `expect` takes the first finding's exact one-based line and column; `null` means no finding. A text fixture can use `expectAll: [{ line, column }, ...]` instead, to assert every match that `check --all-matches` reports, in ascending order ([example](../cookbook/#count-every-match)). Add a fixture outside the scope if the scope matters.
    Fixtures are virtual: `rulecheck test` checks each fixture's `content` as if it lived at its `path`, without reading the working tree or the Git index. The fixture `path` is matched against the rule's `paths`, so a fixture at an out-of-scope path with `expect: null` proves the scope excludes it.
 4. Type-check against the SDK, validate the built policy, and run the fixtures. Inspect findings in a representative checkout before making a rule authoritative.
@@ -26,6 +26,26 @@ An `expectAll` mismatch starts with the first position where the lists differ an
 src/lib/math.ts:4:3: [source/no-console-log] fixture 2 expected 1 violation at 2:3, found 2 violations at 2:3, 4:3. Use the logger instead. Update the rule or fixture.
 ```
 
+## Require text in the same file
+
+A text rule with `requires` reports its `pattern` matches only in files where the `requires` text appears nowhere:
+
+```ts
+export default defineRule({
+  id: "source/interval-needs-clear",
+  kind: "text",
+  paths: ["src/**/*.ts"],
+  pattern: { kind: "regex", value: "\\bsetInterval\\(" },
+  requires: { kind: "literal", value: "clearInterval(" },
+  remediation: "Keep the interval handle and call clearInterval when the work stops.",
+  // ...
+});
+```
+
+Give such a rule fixtures for all three cases: no trigger (`expect: null`), the trigger with its requirement (`expect: null`), and the trigger without it (`expect` at the first trigger). Findings always point at the trigger. Default checks report the first trigger and `--all-matches` reports every trigger. `rulecheck check` and `rulecheck check --commit` judge the same file contents the same way. The [cookbook recipe](../cookbook/#require-text-in-the-same-file) runs both.
+
+`requires` is a `{ kind: "literal" | "regex", value }` object, like `pattern`. The builder rejects it on syntax and forbidden-path rules at the rule file's line and column. The evaluator rejects a regex requirement that can match empty text, because every file would meet it. The baseline `matcher` digest includes `requires`, so changing the requirement invalidates that rule's recorded counts. Rulecheck releases from before `requires` reject a policy that uses it as an unknown field (exit 2), so update every evaluator that checks the repository, including the trusted base tools in CI, before you use it.
+
 ## Record where a rule came from
 
 A rule can name the review finding that led to it:
@@ -45,6 +65,64 @@ export default defineRule({
 Matching ignores `provenance`. A rule finds the same files and lines with or without it, fixtures run the same way, and findings in human or `--format json` output don't include it. It is still part of the rule, so the policy bytes and the shadow workflow's policy digest change when you add or edit it, and the rule is listed as changed in `effectivePolicyDiff`. Policies without `provenance` build exactly as before.
 
 Rulecheck releases from before `provenance` reject a policy that uses it as an unknown field (exit 2). Before you add it, make sure every evaluator that checks the repository, including the trusted base tools in CI, is a release that supports it.
+
+## Reusable exclusion sets and content skips
+
+A rule can leave files out in three ways. They run in this order, in `rulecheck check` and `rulecheck test` alike:
+
+1. `paths` puts a file in scope.
+2. `exclude` and `excludeSets` take it out by path. Rulecheck doesn't open a file excluded this way, so an excluded file can't make the scan fail.
+3. `skipIfContent` takes out a file that is still in scope, based on its first bytes.
+
+### Named exclusion sets
+
+Put a list of exclusion globs that several rules share in `.rulecheck/sets/<name>.set.ts`:
+
+```ts
+import { defineGlobSet } from "@pmdroid/rulecheck";
+
+export default defineGlobSet({
+  version: 1,
+  globs: ["**/__generated__/**", "**/*.pb.ts"],
+  include: ["third-party"],
+});
+```
+
+The file name is the set's name: `generated.set.ts` is `generated`, and `web/vendor.set.ts` is `web/vendor`. Names use lowercase letters, digits and hyphens. A rule adds a set's globs to its `exclude` with `excludeSets: ["generated"]`. `include` adds the globs of other sets. A path matching any resolved glob is out of scope. Lists have no order or precedence, so a later set can't put a file back in scope.
+
+Set files follow the same static subset as rule files: one import of `defineGlobSet`, literal `const` declarations and one `export default defineGlobSet({...})`. The builder parses them without running them, and a rule can't `import` a set. With `--commit`, the builder reads sets and rules from the same commit tree. A working-tree build reads both from the checkout. A set added only to the working tree is unknown to a commit build, which fails at the `excludeSets` entry that names it. The builder also rejects a `.rulecheck/sets` that is a symlink or a nested repository. `version: 1` is the only set version.
+
+Limits, checked when the policy loads (exit 2):
+
+| Limit | Value |
+| --- | --- |
+| `paths` and `exclude` globs per rule | 1 to 64 each (16 before sets) |
+| Globs per set | up to 256, each up to 256 bytes |
+| Sets per policy | 64 |
+| Names in `excludeSets` or `include` | 1 to 16, no duplicates |
+| Include depth | 4 levels, counting the set a rule names |
+| Include cycles | rejected, with the cycle path |
+| Distinct exclusion globs per rule after resolving sets | 256 |
+| `paths` plus resolved exclusion globs over all rules | 4096 |
+
+Every set is checked even when no rule uses it. Shared globs and a set reached twice count once. The caps come from timing `globset` on 200,000 synthetic paths: matching cost grows about linearly with the glob count, from 0.16 µs per path at 16 globs to 0.28 µs at 64 and 0.86 µs at 256. The policy-wide total bounds the work per path.
+
+### Skip files by content
+
+`skipIfContent` skips an in-scope file whose first `firstBytes` bytes contain a `literal` or match a Rust `regex`, for example a generated-file header:
+
+```ts
+skipIfContent: { kind: "regex", value: "^// @generated", firstBytes: 64 },
+```
+
+- Only text and syntax rules accept it, because forbidden-path rules never read content.
+- `firstBytes` is required, from 1 to 65536. Rulecheck checks the predicate against those bytes only. A match must end inside them, and the cut can fall inside a multi-byte character.
+- A syntax rule skips the file before parsing it, so a generated file that doesn't parse is skipped instead of failing.
+- Fixtures go through the same check. A fixture whose `content` starts with the header expects `null`.
+- The predicate only sees content that Rulecheck has read. A file in scope that can't be read still can't be judged and the check exits 2, even if its header would match. That covers a symlink, a file over 1 MiB and a file that isn't UTF-8. A file read for the predicate also counts toward `check --text-budget`: when it would exceed the budget, the scan stops before the predicate runs and reports the rule as not evaluated.
+- A skipped file counts as out of scope. A text rule whose every in-scope file is skipped has an empty scope, and the check exits 2.
+
+Policies without `excludeSets`, `skipIfContent` or set files build exactly as before. Releases from before these fields reject them as unknown (exit 2). Before you use them, make sure every evaluator that checks the repository supports them, including the trusted base tools in CI.
 
 ## Syntax rules
 
@@ -67,6 +145,45 @@ selector: {
 Node kinds and fields are the grammar's own names, and the evaluator checks them against the language's grammars when it loads the policy: both TypeScript and TSX for `"typescript"`, and the one grammar for `"rust"`, `"go"` or `"python"`. An unknown name, one that only TSX has, such as `jsx_element`, or one from the other language, such as `comment` in a Rust rule, exits 2 and names the rule. Rulecheck pins tree-sitter 0.27.2, tree-sitter-typescript 0.23.2, tree-sitter-rust 0.24.2, tree-sitter-go 0.25.0 and tree-sitter-python 0.25.0 exactly, because a grammar update can change which nodes a selector picks. A file in scope that doesn't parse without errors can't be judged: `check` exits 2 and names the file and position, and `test` reports that fixture as one that cannot be judged and exits 1. Files are read up to 1 MiB, and matching walks the tree once, so deep nesting doesn't make a check slow. Syntax rules report the first selected node only, and `check --all-matches` refuses them.
 
 Rulecheck releases from before syntax rules reject a policy that uses `kind: "syntax"` (exit 2), and releases from before Rust, Go or Python support reject that `language` the same way. Update every evaluator that checks the repository, including the trusted base tools in CI, before you add one.
+
+## Port a JavaScript regex
+
+Every regex in a rule (`pattern`, `requires`, `skipIfContent` and a selector `ignore` filter) uses the dialect of the Rust [`regex`](https://docs.rs/regex/1/regex/#syntax) crate. That is the only dialect: there is no JavaScript mode and no second engine. The crate matches in time linear in the file size, whatever the pattern and the input. Write the pattern as a string, not a `/…/` literal, and double each backslash inside the TypeScript string. Write JavaScript flags as inline flags: `(?i)`, `(?m)` and `(?s)`. `g` has no equivalent and isn't needed: `check` reports the first match, and `--all-matches` reports every match.
+
+Most JavaScript patterns mean the same thing in Rust. These don't:
+
+| JavaScript | Rust regex | Write instead |
+| --- | --- | --- |
+| `[` inside a class is a literal bracket: `[^[]`, `[[\]]` | `[` opens a nested class, so these don't compile | `[^\[]`, `[\[\]]` |
+| `[^]` matches any character | doesn't compile | `(?s:.)` |
+| `&&`, `--` and `~~` inside a class are literal characters (without the `v` flag) | intersection, difference and symmetric difference: `[a&&b]` compiles and never matches | `[a\&\&b]`, `[a\-\-b]`, `[a\~\~b]` |
+| `[[a]]` is the class `[[a]` followed by a literal `]` | the class `[a]` | `[\[a]\]` |
+| `\d`, `\w` and `\b` are ASCII | Unicode: `\d` matches `٣`, `\w` matches `é`, and `\bfoo` doesn't match in `éfoo` | `[0-9]`, `(?-u:\w)`, `(?-u:\b)` |
+| `.` excludes `\n`, `\r`, `\u2028` and `\u2029` | `.` excludes only `\n` | `[^\n\r\u{2028}\u{2029}]` |
+| `\b(?=\w)` and `(?<=\w)\b`, the start and end of a word | no look-around | `\b{start}` and `\b{end}` |
+| look-ahead `(?=…)`, `(?!…)` and look-behind `(?<=…)`, `(?<!…)` | not supported | a [rewrite](../cookbook/#port-a-javascript-regex), `paths` and `exclude`, or a [syntax rule](#syntax-rules) |
+| backreferences `\1`, `\k<name>` | not supported | list the alternatives ([example](../cookbook/#port-a-javascript-regex)) |
+| `a{,3}` is the literal text `a{,3}` | doesn't compile | `a{0,3}`, or `a\{,3\}` for the text |
+
+A pattern that doesn't compile exits 2 and names the rule. For a nested-class mistake, look-around and backreferences, a `hint:` line after the regex crate's message says what to write instead:
+
+```text
+rulecheck: [source/no-console-output] invalid regex: regex parse error:
+    \bconsole\.(?!error\b)\w+\(
+               ^^^
+error: look-around, including look-ahead and look-behind, is not supported
+hint: the Rust regex dialect has no look-around. Match a token edge with \b, \b{start} or \b{end}; consume the next character, as in name(?:[^_]|$), instead of a look-ahead; or move the condition into paths, exclude or a syntax selector
+```
+
+A nested class or a set operator compiles, and Rulecheck runs it with its Rust meaning, because a rule may intend exactly that. When a fixture of such a rule fails, the failure line ends with a note on how JavaScript reads the same text:
+
+```text
+src/app.ts:1:1: [source/no-and-operator] fixture 1 expected a violation at 1:1, found no violation. Replace the operator. Update the rule or fixture. This pattern uses the && set operator inside a character class, which the Rust regex dialect applies as set operations but JavaScript without the v flag reads as literal characters; to match the operator characters literally, escape each one with a backslash.
+```
+
+The note only appears with a failing fixture, and only for these class constructs in `pattern`, `requires` or an `ignore` filter. A `skipIfContent` regex gets the compile hints but no note. Add a fixture for each input that the JavaScript rule was meant to catch, so a difference shows up in `rulecheck test`, not in a missed finding.
+
+The rewrites have limits. A negative look-behind rewrite consumes the character before the match, so the finding starts one column early. A list of banned names doesn't catch a name that the list leaves out, where a negative look-ahead would. Rulecheck doesn't offer a backtracking engine for the remaining cases, because such an engine can take exponential time on crafted input.
 
 ## Type-check rules in your repository
 

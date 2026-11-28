@@ -50,7 +50,7 @@ jobs:
             source="${archive%.crate}"
           done
           cargo install --debug --locked --path "$source" --root "$RUNNER_TEMP/rulecheck-install"
-          RULECHECK_INSTALLED_BIN="$RUNNER_TEMP/rulecheck-install/bin/rulecheck" node --test tests/installed-cli.test.mjs
+          RULECHECK_INSTALLED_BIN="$RUNNER_TEMP/rulecheck-install/bin/rulecheck" node --test tests/installed-cli.test.mjs tests/installed-sources.test.mjs
 
   reproduce:
     runs-on: ubuntu-latest
