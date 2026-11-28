@@ -190,8 +190,8 @@ The other limits don't grow with the rule count. The 10,000-finding limit and th
 
 | Rules | Source files | Policy JSON | Build | `validate` | `test` | `check` | `check --commit` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 360 | 240 | 91 KiB | 0.7 s | 0.8 s | 0.9 s | 1.1 s | 2.1 s |
-| 1024 | 700 | 259 KiB | 0.7 s | 0.9 s | 0.9 s | 2.7 s | 7.9 s |
+| 360 | 240 | 91 KiB | 0.2 s | 0.2 s | 0.2 s | 0.5 s | 0.8 s |
+| 1024 | 700 | 259 KiB | 0.2 s | 0.2 s | 0.2 s | 1.0 s | 2.0 s |
 
 Building from a commit reads every rule blob in one Git batch, so it takes about as long as building from the working tree. `check --commit` takes longer than a working-tree check because the evaluator reads each scoped file from Git separately. That cost grows with the number of files in scope, not with the number of rules. Times vary by machine, and the script prints its own measurements. Use `--rules`, `--files` and `--runs` to change the snapshot.
 
