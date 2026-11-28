@@ -146,6 +146,26 @@ Normal pull requests can only lower allowances. Raising one, for example after a
 
 `baselineChange.rebaseline` is `true` for these pull requests, and `raised` lists each allowance that went up for the reviewer.
 
+## Pilot an adoption
+
+`node tools/pilot.mjs` runs the whole adoption loop on a synthetic repository and checks the results against counts the script already knows. It needs `target/release/rulecheck-evaluator`, so run `cargo build --release` first. By default it creates 8 services of 12 text files each, 512 KiB per file, under `services/svc01/` to `services/svc08/`. Each service has three rules: a literal, a regex and a forbidden path. One more rule, `shared/no-inline-token`, covers every service. The script seeds existing findings at known lines. Some files have two or three findings of one rule, and some have findings of several rules. These expected counts are the oracle. Rulecheck's output is never used to build them.
+
+The script then checks the following, and exits 1 if any of them fails:
+
+- **Exact counts.** A single `check --all-matches`, one run per `--id-prefix`, and a `--commit` run must each report the oracle's count for every rule and path. The single run must also report the oracle's positions. `baseline` must record the same counts.
+- **Same-file addition.** On a file with two findings of one rule, a third finding fails `check --baseline` with that rule and path at 3 of 2 allowed.
+- **Incomplete scan.** With the third finding still present, `--text-budget 1` stops the scan. The check exits 2 with no baseline comparison. `baseline --write`, with or without `--id-prefix`, exits 2 and leaves the file unchanged. The next complete check still fails.
+- **Clean-up.** With one finding left in the file, the check passes and reports the count as loose, and `--strict-baseline` fails. After `baseline --write` the count for that path is 1, the other counts are unchanged, and the strict check passes. Adding the cleaned finding back then fails.
+
+It also times `check --baseline` through the installed wrapper in two ways: once as a single run, and once as one run per prefix (9 by default). Each way gets a cold run in a fresh clone, then `--runs` warm runs (default 3), and the script reports the median. A fresh clone doesn't clear the operating system's file cache, so a cold run here measures a new checkout, not a cold disk. The report includes the number of builder starts, counted from the Node.js processes that actually load `tools/build.mjs`, and the scoped text bytes each approach reads. One sample on an 8-core Linux runner, with 48 MiB of scoped text, 25 rules and 143 existing findings:
+
+| Approach | Invocations | Builder starts | Scoped text read | Cold | Warm (median) | Completed |
+| --- | --- | --- | --- | --- | --- | --- |
+| One run | 1 | 1 | 48 MiB | 0.6 s | 0.6 s | yes |
+| One run per prefix | 9 | 9 | 96 MiB | 5.7 s | 5.8 s | yes |
+
+The per-prefix runs read twice as much text because `shared/` scans every service again. `--time-budget-ms` (default 10000) sets the time a single run should take. The report says whether the cold and warm single runs meet it. A policy cache is only worth considering when they don't, and the script never writes a policy file. Use `--prefixes`, `--files` and `--file-kib` to change the snapshot. `tests/pilot.rs` runs a small version in `cargo test`.
+
 ## Result document
 
 With `--baseline`, `check --format json` adds:
